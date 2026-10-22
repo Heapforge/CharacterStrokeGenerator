@@ -1,0 +1,1071 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stroke Review</title>
+<script src="https://cdn.jsdelivr.net/npm/hanzi-writer@3.5.0/dist/hanzi-writer.min.js"></script>
+<style>
+:root {
+  --bg: #f6f3ec; --panel: #fffdf8; --sunk: #efebe1; --line: #e0d9ca; --line-strong: #c9bfab;
+  --ink: #1f1b16; --ink-2: #5f574b; --ink-3: #8c8374;
+  --accent: #b8321f; --accent-ink: #fff; --accent-soft: #f6dcd5;
+  --ok: #2f7a4a; --ok-soft: #dcefe2; --warn: #9a6a00; --warn-soft: #f6ebc8; --err: #b42318; --err-soft: #fbe0dc;
+  --ghost: #d9d1c1; --glyph-filter: none;
+  --radius: 8px; --shadow: 0 1px 2px rgba(40, 30, 10, .06), 0 4px 16px rgba(40, 30, 10, .05);
+  --mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  --cjk: "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15130f; --panel: #1d1a16; --sunk: #12100d; --line: #2e2a24; --line-strong: #453f36;
+    --ink: #ece6da; --ink-2: #b3aa9a; --ink-3: #847b6c;
+    --accent: #e8664f; --accent-ink: #1a0d09; --accent-soft: #3a1f19;
+    --ok: #6cc28a; --ok-soft: #1c3124; --warn: #e0b04a; --warn-soft: #362b12; --err: #f07a6a; --err-soft: #3a1a16;
+    --ghost: #3b362e; --glyph-filter: invert(.92);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 4px 16px rgba(0, 0, 0, .25);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15130f; --panel: #1d1a16; --sunk: #12100d; --line: #2e2a24; --line-strong: #453f36;
+  --ink: #ece6da; --ink-2: #b3aa9a; --ink-3: #847b6c;
+  --accent: #e8664f; --accent-ink: #1a0d09; --accent-soft: #3a1f19;
+  --ok: #6cc28a; --ok-soft: #1c3124; --warn: #e0b04a; --warn-soft: #362b12; --err: #f07a6a; --err-soft: #3a1a16;
+  --ghost: #3b362e; --glyph-filter: invert(.92);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 4px 16px rgba(0, 0, 0, .25);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- shell ---------- */
+.app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+header { display: flex; align-items: center; gap: 16px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: .01em; display: flex; align-items: center; gap: 10px; }
+header h1 .seal { font-family: var(--cjk); background: var(--accent); color: var(--accent-ink); width: 26px; height: 26px; display: grid; place-items: center; border-radius: 5px; font-size: 16px; }
+header .spacer { flex: 1; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 99px; background: var(--sunk); color: var(--ink-2); font-size: 12px; border: 1px solid var(--line); }
+.pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
+.pill.ready .dot { background: var(--ok); }
+.pill.loading .dot { background: var(--warn); animation: pulse 1s infinite alternate; }
+.pill.error .dot { background: var(--err); }
+@keyframes pulse { to { opacity: .3; } }
+main { display: grid; grid-template-columns: minmax(300px, 360px) 230px 1fr; min-height: 0; }
+.col { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+.col:last-child { border-right: 0; }
+.col-head { padding: 12px 14px 10px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; background: var(--panel); }
+.col-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+.scroll { overflow: auto; min-height: 0; flex: 1; }
+
+/* ---------- controls ---------- */
+.btn { border: 1px solid var(--line-strong); background: var(--panel); border-radius: 6px; padding: 5px 11px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.btn:hover:not(:disabled) { border-color: var(--ink-3); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.btn.primary:hover:not(:disabled) { filter: brightness(1.07); }
+.btn.danger { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); font-weight: 600; }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--ink-2); }
+.btn.ghost:hover:not(:disabled) { background: var(--sunk); border-color: transparent; }
+.btn.sm { padding: 2px 8px; font-size: 12px; }
+.btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.input, select.input { border: 1px solid var(--line-strong); background: var(--panel); border-radius: 6px; padding: 5px 9px; min-width: 0; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row > .grow { flex: 1; }
+.tabs { display: flex; gap: 2px; background: var(--sunk); padding: 3px; border-radius: 7px; border: 1px solid var(--line); }
+.tabs button { flex: 1; border: 0; background: transparent; padding: 4px 8px; border-radius: 5px; color: var(--ink-2); font-size: 13px; }
+.tabs button.on { background: var(--panel); color: var(--ink); box-shadow: var(--shadow); font-weight: 600; }
+.muted { color: var(--ink-3); font-size: 12px; }
+.mono { font-family: var(--mono); }
+
+/* ---------- glyph grid ---------- */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 6px; padding: 12px 14px; }
+.cell { position: relative; aspect-ratio: 1; border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 6px 6px 14px; display: grid; place-items: center; user-select: none; }
+.cell img { width: 100%; height: 100%; object-fit: contain; filter: var(--glyph-filter); pointer-events: none; }
+.cell .lbl { position: absolute; bottom: 2px; left: 0; right: 0; text-align: center; font-size: 10px; color: var(--ink-3); font-family: var(--mono); }
+.cell .nodata { position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
+.cell:hover { border-color: var(--ink-3); }
+.cell.sel { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.cell.sel::after { content: "✓"; position: absolute; top: 2px; left: 4px; font-size: 11px; color: var(--accent); font-weight: 700; }
+.cell.queued { opacity: .55; }
+.more { display: flex; justify-content: center; padding: 4px 0 16px; }
+.selbar { padding: 10px 14px; border-top: 1px solid var(--line); background: var(--panel); display: flex; align-items: center; gap: 8px; }
+.selbar .count { flex: 1; font-size: 13px; color: var(--ink-2); }
+.selbar .count b { color: var(--ink); }
+
+/* ---------- uploads ---------- */
+.drop { margin: 12px 14px; border: 1.5px dashed var(--line-strong); border-radius: var(--radius); padding: 22px 14px; text-align: center; color: var(--ink-2); background: var(--panel); }
+.drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.drop b { color: var(--ink); }
+.uplist { display: flex; flex-direction: column; gap: 6px; padding: 0 14px 14px; }
+.up { display: grid; grid-template-columns: 44px 1fr auto; gap: 10px; align-items: center; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.up .thumb { width: 44px; height: 44px; display: grid; place-items: center; }
+.up .thumb svg { width: 100%; height: 100%; fill: var(--ink); }
+.up .meta { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.up .meta .fname { font-size: 11px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.up .meta input { width: 70px; font-family: var(--cjk); font-size: 16px; padding: 1px 6px; }
+.up .meta input.bad { border-color: var(--err); background: var(--err-soft); }
+
+/* ---------- queue ---------- */
+.progress { height: 3px; background: var(--sunk); border-radius: 2px; overflow: hidden; }
+.progress > div { height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+.queue { list-style: none; margin: 0; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.qi { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+.qi:hover { background: var(--sunk); }
+.qi.cur { background: var(--panel); border-color: var(--line-strong); box-shadow: var(--shadow); }
+.qi .ch { font-family: var(--cjk); font-size: 22px; line-height: 1; text-align: center; }
+.qi .info { min-width: 0; font-size: 11px; color: var(--ink-3); display: flex; flex-direction: column; }
+.qi .info span:first-child { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip { font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 99px; background: var(--sunk); color: var(--ink-3); white-space: nowrap; border: 1px solid var(--line); }
+.chip.running { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+.chip.ready { color: var(--ink-2); background: var(--panel); }
+.chip.edited { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.chip.saved { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.chip.error { color: var(--err); background: var(--err-soft); border-color: transparent; }
+.empty { padding: 36px 20px; text-align: center; color: var(--ink-3); font-size: 13px; }
+.empty .big { font-family: var(--cjk); font-size: 56px; color: var(--ghost); line-height: 1.1; margin-bottom: 8px; }
+
+/* ---------- inspector ---------- */
+.insp { padding: 18px 22px 0; display: flex; flex-direction: column; gap: 18px; }
+.ihead { display: flex; align-items: center; gap: 16px; }
+.ihead .glyph { font-family: var(--cjk); font-size: 52px; line-height: 1; }
+.ihead .facts { display: flex; flex-direction: column; gap: 4px; }
+.ihead .facts .t { font-size: 16px; font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.ihead .nav { margin-left: auto; display: flex; gap: 4px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.card h3 { margin: 0; font-size: 12px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.stage { position: relative; width: 300px; height: 300px; max-width: 100%; margin: 0 auto; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.stage .guide { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.stage .guide line { stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 4 5; }
+.stage .hw { position: absolute; inset: 0; }
+.stage .note { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink-3); text-align: center; padding: 30px; font-size: 13px; }
+.stage .quizmsg { position: absolute; left: 8px; bottom: 6px; font-size: 12px; color: var(--ink-2); }
+.ctrls { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; align-items: center; }
+.input.sm { padding: 2px 6px; font-size: 12px; }
+.tabs.mini { text-transform: none; letter-spacing: 0; font-weight: 400; padding: 2px; }
+.tabs.mini button { padding: 1px 8px; font-size: 11.5px; white-space: nowrap; }
+.tabs.mini button:disabled { opacity: .4; cursor: default; }
+.stage.write .hw { cursor: crosshair; touch-action: none; }
+.wstatus { text-align: center; font-size: 12.5px; color: var(--ink-2); min-height: 18px; }
+.wstatus.done { color: var(--ok); font-weight: 600; }
+.wstatus.bad { color: var(--warn); }
+.wres { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+.ws { position: relative; min-width: 24px; height: 22px; padding: 0 6px; border-radius: 5px; display: inline-grid; place-items: center; font-size: 11.5px; font-weight: 650;
+  background: var(--sunk); color: var(--ink-3); border: 1px solid var(--line); cursor: default; }
+.ws.cur { border-color: var(--accent); color: var(--accent); }
+.ws.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.ws.miss { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.ws.back { box-shadow: inset 0 0 0 1.5px var(--err); }
+.ws sup { font-size: 9px; margin-left: 1px; }
+.warnbox { font-size: 12.5px; padding: 8px 10px; border-radius: 6px; background: var(--warn-soft); color: var(--warn); }
+.errbox { font-size: 12.5px; padding: 8px 10px; border-radius: 6px; background: var(--err-soft); color: var(--err); }
+.okbox { font-size: 12.5px; padding: 8px 10px; border-radius: 6px; background: var(--ok-soft); color: var(--ok); }
+
+.order-wrap { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
+.overview { width: 260px; height: 260px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.overview .s { fill: var(--ghost); transition: fill .12s; }
+.overview .s.hl { fill: var(--accent); }
+.overview .m { fill: none; stroke: var(--ink-2); stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; opacity: .55; }
+.overview .num circle { fill: var(--panel); stroke: var(--ink-2); stroke-width: 5; }
+.overview .num text { font: 600 46px system-ui, sans-serif; fill: var(--ink); text-anchor: middle; dominant-baseline: central; }
+.overview .num.hl circle { fill: var(--accent); stroke: var(--accent); }
+.overview .num.hl text { fill: var(--accent-ink); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 8px; }
+.tile { position: relative; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 4px; cursor: grab; display: flex; flex-direction: column; gap: 2px; }
+.tile:hover, .tile.hl { border-color: var(--accent); }
+.tile.dragging { opacity: .35; }
+.tile.drop-before { box-shadow: -4px 0 0 -1px var(--accent); }
+.tile.drop-after { box-shadow: 4px 0 0 -1px var(--accent); }
+.tile.moved .n { background: var(--accent); color: var(--accent-ink); }
+.tile svg { width: 100%; aspect-ratio: 1; display: block; }
+.tile svg .bg { fill: var(--ghost); }
+.tile svg .fg { fill: var(--ink); }
+.tile svg .m { fill: none; stroke: var(--accent); stroke-width: 14; stroke-linecap: round; stroke-linejoin: round; }
+.tile svg .st { fill: var(--accent); }
+.tile .bar { display: flex; align-items: center; gap: 2px; }
+.tile .n { font-size: 11px; font-weight: 700; min-width: 20px; height: 18px; display: grid; place-items: center; border-radius: 4px; background: var(--sunk); color: var(--ink-2); padding: 0 4px; }
+.tile .bar .sp { flex: 1; }
+.tile .bar button { border: 0; background: transparent; color: var(--ink-3); padding: 0 3px; font-size: 13px; line-height: 18px; border-radius: 3px; }
+.tile .bar button:hover:not(:disabled) { background: var(--sunk); color: var(--ink); }
+.tile .bar button:disabled { opacity: .35; cursor: default; }
+.tile .bar button.flipped { color: var(--accent); }
+.tile .del { position: absolute; top: 3px; right: 3px; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: var(--panel); color: var(--ink-3); font-size: 12px; line-height: 20px; opacity: .45; }
+.tile:hover .del, .tile:focus-within .del { opacity: 1; }
+.tile .del:hover:not(:disabled) { background: var(--err-soft); color: var(--err); }
+.tile .del:disabled { display: none; }
+.deleted { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.orderline { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.orderline input { flex: 1; min-width: 160px; font-family: var(--mono); font-size: 12.5px; }
+
+details.json summary { cursor: pointer; font-size: 12px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); list-style: none; display: flex; align-items: center; gap: 8px; }
+details.json summary::before { content: "▸"; transition: transform .15s; }
+details.json[open] summary::before { transform: rotate(90deg); }
+details.json pre { margin: 10px 0 0; max-height: 340px; overflow: auto; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; font: 11.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all; }
+
+.commit { position: sticky; bottom: 0; margin: 0 -22px; padding: 12px 22px; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(6px); border-top: 1px solid var(--line); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.commit .path { font-family: var(--mono); font-size: 12px; color: var(--ink-2); flex: 1; min-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.commit .msg { flex-basis: 100%; }
+
+.modal-bg { position: fixed; inset: 0; background: rgba(10, 8, 5, .45); display: grid; place-items: center; z-index: 10; padding: 16px; }
+.modal { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 20px; width: min(440px, 100%); display: flex; flex-direction: column; gap: 12px; }
+.modal h2 { margin: 0; font-size: 16px; }
+.modal .row { justify-content: flex-end; }
+
+.kbd { font-family: var(--mono); font-size: 11px; padding: 0 5px; border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; color: var(--ink-2); }
+
+@media (max-width: 1100px) {
+  main { grid-template-columns: 1fr 1fr; grid-template-rows: minmax(0, 46vh) auto; }
+  .col.inspector { grid-column: 1 / -1; border-top: 1px solid var(--line); }
+  .app { height: auto; min-height: 100vh; }
+}
+@media (max-width: 700px) {
+  main { grid-template-columns: 1fr; grid-template-rows: auto; }
+  .col { border-right: 0; border-bottom: 1px solid var(--line); max-height: none; }
+  .col.source .scroll, .col.queuecol .scroll { max-height: 50vh; }
+  .insp { padding: 16px 16px 0; }
+  .commit { margin: 0 -16px; padding: 12px 16px; }
+  .order-wrap { grid-template-columns: 1fr; }
+  .overview { width: 100%; height: auto; aspect-ratio: 1; max-width: 300px; margin: 0 auto; }
+  header { flex-wrap: wrap; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1><span class="seal">筆</span>Stroke Review</h1>
+    <span class="muted" id="hdr-data"></span>
+    <span class="spacer"></span>
+    <span class="pill loading" id="model-pill"><span class="dot"></span><span id="model-text">Loading model…</span></span>
+    <button class="btn ghost sm" id="theme-btn" title="Toggle theme">◐</button>
+  </header>
+  <main>
+    <!-- source picker -->
+    <section class="col source">
+      <div class="col-head">
+        <div class="tabs" role="tablist">
+          <button class="on" data-tab="fonts">Font glyphs</button>
+          <button data-tab="upload">Upload SVGs</button>
+        </div>
+        <div id="fonts-ctrl" style="display:flex;flex-direction:column;gap:8px">
+          <div class="row">
+            <select class="input grow" id="font-sel"></select>
+            <select class="input" id="only-sel" title="Filter by training data">
+              <option value="all">All</option>
+              <option value="new">No data yet</option>
+              <option value="has">Has data</option>
+            </select>
+          </div>
+          <input class="input" id="search" placeholder="Characters or code points, e.g. 永林 or U+6C38" autocomplete="off">
+          <div class="row"><span class="muted grow" id="grid-count"></span>
+            <button class="btn ghost sm" id="sel-page">Select shown</button></div>
+          <button class="btn sm" id="queue-new" disabled title="Add every glyph of this font that has no training data file to the queue">Process all without data</button>
+        </div>
+      </div>
+      <div class="scroll" id="fonts-pane">
+        <div class="grid" id="grid"></div>
+        <div class="more" id="more"></div>
+      </div>
+      <div class="scroll" id="upload-pane" hidden>
+        <label class="drop" id="drop">
+          <input type="file" id="file-in" accept=".svg,image/svg+xml" multiple hidden>
+          <b>Drop SVG files here</b> or click to choose.<br>
+          <span class="muted">The character comes from the file name (<span class="mono">永.svg</span>, <span class="mono">U+6C38.svg</span>, <span class="mono">uni6C38.svg</span>). You can edit it below.</span>
+        </label>
+        <div class="uplist" id="uplist"></div>
+      </div>
+      <div class="selbar">
+        <span class="count" id="sel-count"></span>
+        <button class="btn ghost sm" id="sel-clear">Clear</button>
+        <button class="btn primary" id="process-btn" disabled>Process</button>
+      </div>
+    </section>
+
+    <!-- queue -->
+    <section class="col queuecol">
+      <div class="col-head">
+        <div class="col-title"><span>Queue</span><span id="q-count"></span></div>
+        <div class="progress"><div id="q-prog"></div></div>
+        <div class="row">
+          <button class="btn sm grow" id="save-all" disabled>Save all</button>
+          <button class="btn ghost sm" id="q-clear" title="Remove saved and failed items">Tidy</button>
+        </div>
+      </div>
+      <div class="scroll"><ul class="queue" id="queue"></ul>
+        <div class="empty" id="q-empty"><div class="big">永</div>Select glyphs and press <b>Process</b>. Results show up here.</div>
+      </div>
+    </section>
+
+    <!-- inspector -->
+    <section class="col inspector">
+      <div class="scroll" id="insp-scroll"><div class="insp" id="insp"></div></div>
+    </section>
+  </main>
+</div>
+<div id="modal-root"></div>
+
+<script>
+"use strict";
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const cp = c => "U+" + c.codePointAt(0).toString(16).toUpperCase().padStart(4, "0");
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const PAGE = 300;
+const VARIANTS = [["", "plain (training)"], ["-jp", "-jp variant"], ["-ko", "-ko variant"]];
+
+const S = {
+  tab: "fonts", fonts: [], font: "", glyphs: null, page: 1, lastClick: null,
+  selected: new Map(),          // "font\tchar" -> {font, char}
+  uploads: [],                  // {id, name, char, svg}
+  queue: [], cur: null, busy: false, dataDir: "",
+};
+let nextId = 1;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({error: `HTTP ${r.status}`}));
+  if (!r.ok) { const e = new Error(j.error || `HTTP ${r.status}`); e.status = r.status; throw e; }
+  return j;
+}
+
+/* ---------------- theme ---------------- */
+try { const t = localStorage.getItem("sr-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+$("#theme-btn").onclick = () => {
+  const dark = document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("sr-theme", document.documentElement.dataset.theme); } catch {}
+  renderInspector();
+};
+
+/* ---------------- status ---------------- */
+async function pollStatus() {
+  try {
+    const s = await api("/api/status");
+    S.dataDir = s.dataDir;
+    $("#hdr-data").textContent = "→ " + s.dataDir;
+    if (!S.fonts.length) {
+      S.fonts = s.fonts;
+      $("#font-sel").innerHTML = s.fonts.map(f => `<option>${esc(f)}</option>`).join("");
+      const pref = s.fonts.includes("ukai-cn") ? "ukai-cn" : s.fonts[0];
+      $("#font-sel").value = pref; loadFont(pref);
+    }
+    const pill = $("#model-pill"), m = s.model;
+    pill.className = "pill " + m.state;
+    $("#model-text").textContent = m.state === "ready" ? `Model ready · ${m.device}` : m.state === "error" ? "Model failed to load" : "Loading model…";
+    pill.title = m.error || "";
+    if (m.state === "loading") setTimeout(pollStatus, 1000);
+  } catch (e) {
+    $("#model-pill").className = "pill error"; $("#model-text").textContent = "Server unreachable";
+    setTimeout(pollStatus, 3000);
+  }
+}
+
+/* ---------------- source: fonts ---------------- */
+async function loadFont(font) {
+  S.font = font; S.glyphs = null; S.page = 1;
+  renderQueueNew();
+  $("#grid").innerHTML = `<div class="muted" style="grid-column:1/-1">Loading ${esc(font)}…</div>`;
+  const g = await api(`/api/glyphs?font=${encodeURIComponent(font)}`);
+  if (S.font !== font) return;
+  g.has = new Map(g.chars.map((c, i) => [c, g.hasData[i]]));
+  S.glyphs = g; renderGrid();
+}
+
+function parseQuery(q) {
+  q = q.trim();
+  if (!q) return null;
+  const out = [];
+  const hex = /^(?:U\+|u\+|0x|uni|u)?([0-9a-fA-F]{4,6})$/;
+  for (const tok of q.split(/[\s,]+/)) {
+    const m = tok.match(hex);
+    if (m && /\d|U\+|uni|0x/i.test(tok) && tok.length >= 4 && !/[^\x00-\x7f]/.test(tok)) { out.push(String.fromCodePoint(parseInt(m[1], 16))); continue; }
+    out.push(...Array.from(tok));
+  }
+  return out;
+}
+
+function visibleChars() {
+  if (!S.glyphs) return [];
+  const only = $("#only-sel").value, q = parseQuery($("#search").value);
+  let list = q ? [...new Set(q)].filter(c => S.glyphs.has.has(c)) : S.glyphs.chars;
+  if (only !== "all") list = list.filter(c => S.glyphs.has.get(c) === (only === "has"));
+  return list;
+}
+
+function renderGrid() {
+  const list = visibleChars(), shown = list.slice(0, S.page * PAGE);
+  const queued = new Set(S.queue.filter(i => i.font).map(i => i.font + "\t" + i.char));
+  $("#grid").innerHTML = shown.map((c, i) => {
+    const k = S.font + "\t" + c;
+    return `<button class="cell${S.selected.has(k) ? " sel" : ""}${queued.has(k) ? " queued" : ""}" data-i="${i}" title="${esc(c)} ${cp(c)}${S.glyphs.has.get(c) ? "" : " · no training data yet"}">
+      <img loading="lazy" alt="" src="/api/svg?font=${encodeURIComponent(S.font)}&char=${encodeURIComponent(c)}">
+      <span class="lbl">${esc(c)}</span>${S.glyphs.has.get(c) ? "" : '<span class="nodata"></span>'}</button>`;
+  }).join("") || `<div class="muted" style="grid-column:1/-1">No glyphs match.</div>`;
+  $("#grid-count").textContent = `${list.length.toLocaleString()} glyph${list.length === 1 ? "" : "s"}` + (list.length > shown.length ? ` · showing ${shown.length.toLocaleString()}` : "");
+  $("#more").innerHTML = list.length > shown.length ? `<button class="btn sm" id="more-btn">Show ${Math.min(PAGE, list.length - shown.length)} more</button>` : "";
+  const mb = $("#more-btn"); if (mb) mb.onclick = () => { S.page++; renderGrid(); };
+  renderSelbar(); renderQueueNew();
+}
+
+// Glyphs of the current font with no training data file that are not queued yet.
+function unqueuedNew() {
+  if (!S.glyphs) return [];
+  const queued = new Set(S.queue.filter(i => i.font === S.font).map(i => i.char));
+  return S.glyphs.chars.filter(c => !S.glyphs.has.get(c) && !queued.has(c));
+}
+function renderQueueNew() {
+  const b = $("#queue-new"), n = unqueuedNew().length;
+  b.disabled = !n;
+  b.textContent = !S.glyphs ? "Process all without data" : n ? `Process all without data (${n.toLocaleString()})` : "No glyphs left without data";
+}
+$("#queue-new").onclick = () => {
+  const font = S.font, chars = unqueuedNew();
+  if (!chars.length) return;
+  const go = () => {
+    for (const c of chars) { S.queue.push(newItem({font, char: c})); S.selected.delete(font + "\t" + c); }
+    renderGrid(); renderQueue(); runQueue();
+  };
+  if (chars.length <= 50) return go();
+  $("#modal-root").innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true">
+    <h2>Process ${chars.length.toLocaleString()} glyphs?</h2>
+    <div>Every glyph in <b>${esc(font)}</b> without a training data file goes into the queue and runs through the model one after another. Nothing is saved until you save it.</div>
+    <div class="row"><button class="btn ghost" id="m-cancel">Cancel</button><button class="btn primary" id="m-ok">Process ${chars.length.toLocaleString()}</button></div>
+  </div></div>`;
+  const close = () => { $("#modal-root").innerHTML = ""; };
+  $("#m-cancel").onclick = close;
+  $(".modal-bg").onclick = e => { if (e.target === e.currentTarget) close(); };
+  $("#m-ok").onclick = () => { close(); go(); };
+  $("#m-ok").focus();
+};
+
+$("#grid").addEventListener("click", e => {
+  const cell = e.target.closest(".cell"); if (!cell) return;
+  const list = visibleChars(), i = +cell.dataset.i;
+  const range = e.shiftKey && S.lastClick != null ? [Math.min(S.lastClick, i), Math.max(S.lastClick, i)] : [i, i];
+  const k0 = S.font + "\t" + list[i], turnOn = !S.selected.has(k0);
+  for (let j = range[0]; j <= range[1]; j++) {
+    const k = S.font + "\t" + list[j];
+    if (turnOn) S.selected.set(k, {font: S.font, char: list[j]}); else S.selected.delete(k);
+    const el = $(`.cell[data-i="${j}"]`); if (el) el.classList.toggle("sel", turnOn);
+  }
+  S.lastClick = i; renderSelbar();
+});
+$("#font-sel").onchange = e => loadFont(e.target.value);
+$("#only-sel").onchange = () => { S.page = 1; renderGrid(); };
+let searchT; $("#search").oninput = () => { clearTimeout(searchT); searchT = setTimeout(() => { S.page = 1; S.lastClick = null; renderGrid(); }, 150); };
+$("#sel-page").onclick = () => {
+  const list = visibleChars().slice(0, S.page * PAGE);
+  for (const c of list) S.selected.set(S.font + "\t" + c, {font: S.font, char: c});
+  renderGrid();
+};
+
+/* ---------------- source: uploads ---------------- */
+for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => {
+  S.tab = b.dataset.tab;
+  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
+  $("#fonts-ctrl").hidden = S.tab !== "fonts";
+  $("#fonts-pane").hidden = S.tab !== "fonts";
+  $("#upload-pane").hidden = S.tab !== "upload";
+  renderSelbar();
+};
+function charFromName(name) {
+  const stem = name.replace(/\.svg$/i, "");
+  if (Array.from(stem).length === 1) return stem;
+  const m = stem.match(/(?:U\+|uni|u|0x)([0-9a-fA-F]{4,6})$/i) || stem.match(/^([0-9a-fA-F]{4,6})$/);
+  if (m) return String.fromCodePoint(parseInt(m[1], 16));
+  const cjk = Array.from(stem).find(c => c.codePointAt(0) > 0x2e7f);
+  return cjk || "";
+}
+function svgPreview(svg) {
+  // Render the uploaded outline as plain paths only, so no foreign markup ends up in the page.
+  const vb = (svg.match(/viewBox\s*=\s*"([^"]*)"/) || [, "0 0 1024 1024"])[1];
+  const ds = [...svg.matchAll(/<path\b[^>]*?\bd\s*=\s*"([^"]*)"/gs)].map(m => m[1]);
+  return `<svg viewBox="${esc(vb)}">${ds.map(d => `<path d="${esc(d)}"/>`).join("")}</svg>`;
+}
+async function addFiles(files) {
+  for (const f of files) {
+    if (!/\.svg$/i.test(f.name) && f.type !== "image/svg+xml") continue;
+    const svg = await f.text();
+    S.uploads.push({id: nextId++, name: f.name, char: charFromName(f.name), svg});
+  }
+  renderUploads();
+}
+function renderUploads() {
+  $("#uplist").innerHTML = S.uploads.map(u => `<div class="up" data-id="${u.id}">
+    <div class="thumb">${svgPreview(u.svg)}</div>
+    <div class="meta"><span class="fname" title="${esc(u.name)}">${esc(u.name)}</span>
+      <div class="row"><input class="input${validChar(u.char) ? "" : " bad"}" value="${esc(u.char)}" maxlength="8" aria-label="Character">
+      <span class="muted mono">${validChar(u.char) ? cp(u.char) : "set a character"}</span></div></div>
+    <button class="btn ghost sm" data-rm title="Remove">✕</button></div>`).join("");
+  renderSelbar();
+}
+const validChar = c => !!c && !/[\/\\\s.]/.test(c) && Array.from(c).length <= 8;
+$("#uplist").addEventListener("input", e => {
+  const row = e.target.closest(".up"); const u = S.uploads.find(x => x.id === +row.dataset.id);
+  u.char = e.target.value.trim();
+  e.target.classList.toggle("bad", !validChar(u.char));
+  row.querySelector(".muted.mono").textContent = validChar(u.char) ? cp(u.char) : "set a character";
+  renderSelbar();
+});
+$("#uplist").addEventListener("click", e => {
+  if (!e.target.closest("[data-rm]")) return;
+  const id = +e.target.closest(".up").dataset.id;
+  S.uploads = S.uploads.filter(u => u.id !== id); renderUploads();
+});
+$("#file-in").onchange = e => { addFiles([...e.target.files]); e.target.value = ""; };
+const drop = $("#drop");
+["dragenter", "dragover"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => addFiles([...e.dataTransfer.files]));
+
+/* ---------------- selection bar ---------------- */
+function renderSelbar() {
+  if (S.tab === "fonts") {
+    const n = S.selected.size;
+    $("#sel-count").innerHTML = n ? `<b>${n.toLocaleString()}</b> selected` : `Click glyphs to select · <span class="kbd">Shift</span> for a range`;
+    $("#process-btn").disabled = !n;
+    $("#process-btn").textContent = n ? `Process ${n.toLocaleString()}` : "Process";
+  } else {
+    const ok = S.uploads.filter(u => validChar(u.char)).length;
+    $("#sel-count").innerHTML = S.uploads.length ? `<b>${ok}</b> of ${S.uploads.length} ready` : "No files yet";
+    $("#process-btn").disabled = !ok;
+    $("#process-btn").textContent = ok ? `Process ${ok}` : "Process";
+  }
+}
+$("#sel-clear").onclick = () => {
+  if (S.tab === "fonts") { S.selected.clear(); renderGrid(); } else { S.uploads = []; renderUploads(); }
+};
+$("#process-btn").onclick = () => {
+  const have = new Set(S.queue.filter(i => i.font).map(i => i.font + "\t" + i.char));
+  if (S.tab === "fonts") {
+    for (const [k, v] of S.selected) if (!have.has(k)) S.queue.push(newItem({font: v.font, char: v.char}));
+    S.selected.clear(); renderGrid();
+  } else {
+    const keep = [];
+    for (const u of S.uploads) {
+      if (validChar(u.char)) S.queue.push(newItem({char: u.char, svg: u.svg, fileName: u.name})); else keep.push(u);
+    }
+    S.uploads = keep; renderUploads();
+  }
+  renderQueue(); runQueue();
+};
+
+/* ---------------- queue ---------------- */
+function newItem(o) {
+  return {id: nextId++, status: "pending", variant: "", pred: null, order: null, flip: null, parts: {}, base: 0, segStroke: null,
+    deleted: [], existing: {}, saved: null, error: null, ...o};
+}
+// Strokes are indices into it.pred; indices >= it.base are merges, it.parts[i] = [first, second].
+// it.deleted lists strokes taken out of it.order, so they can be put back.
+const strokeLabel = (it, i) => it.parts[i] ? it.parts[i].map(j => strokeLabel(it, j)).join("+") : String(i + 1);
+const baseIds = (it, i) => it.parts[i] ? it.parts[i].flatMap(j => baseIds(it, j)) : [i];
+const isEdited = it => it.order && (it.deleted.length > 0 || it.order.length !== it.base || it.order.some((v, i) => v !== i || it.flip[v]));
+function itemChip(it) {
+  if (it.status === "error") return ["error", "failed"];
+  if (it.status === "pending") return ["", "queued"];
+  if (it.status === "running") return ["running", "running"];
+  if (it.saved) return ["saved", "saved"];
+  return isEdited(it) ? ["edited", "edited"] : ["ready", "review"];
+}
+function renderQueue() {
+  const q = S.queue;
+  $("#q-empty").hidden = q.length > 0;
+  const done = q.filter(i => i.status === "done" || i.status === "error").length;
+  $("#q-count").textContent = q.length ? `${done}/${q.length}` : "";
+  $("#q-prog").style.width = q.length ? `${100 * done / q.length}%` : "0";
+  $("#queue").innerHTML = q.map(it => {
+    const [cls, label] = itemChip(it);
+    const src = it.font || it.fileName;
+    const sub = it.pred ? `${it.order.length} strokes` : it.error ? esc(it.error) : cp(it.char);
+    return `<li class="qi${S.cur === it.id ? " cur" : ""}" data-id="${it.id}"><span class="ch">${esc(it.char)}</span>
+      <span class="info"><span>${esc(src)}</span><span>${sub}</span></span><span class="chip ${cls}">${label}</span></li>`;
+  }).join("");
+  const unsaved = q.filter(i => i.status === "done" && !i.saved).length;
+  $("#save-all").disabled = !unsaved || S.saving;
+  $("#save-all").textContent = unsaved ? `Save all (${unsaved})` : "Save all";
+}
+$("#queue").addEventListener("click", e => {
+  const li = e.target.closest(".qi"); if (li) select(+li.dataset.id);
+});
+$("#q-clear").onclick = () => {
+  S.queue = S.queue.filter(i => !(i.saved || i.status === "error") || i.id === S.cur);
+  renderQueue(); if (S.tab === "fonts") renderGrid();
+};
+
+async function runQueue() {
+  if (S.busy) return;
+  S.busy = true;
+  let it;
+  while ((it = S.queue.find(i => i.status === "pending"))) {
+    it.status = "running"; renderQueue();
+    try {
+      const r = await api("/api/predict", it.svg ? {svg: it.svg} : {font: it.font, char: it.char});
+      it.pred = {strokes: r.strokes, medians: r.medians}; it.ms = r.ms;
+      it.order = r.strokes.map((_, i) => i); it.flip = r.strokes.map(() => false);
+      it.segStroke = r.segStroke; it.base = r.strokes.length; it.parts = {}; it.deleted = [];
+      it.status = "done";
+      await loadExisting(it);
+    } catch (e) { it.status = "error"; it.error = e.message; }
+    renderQueue();
+    if (S.cur == null || S.cur === it.id) select(it.id);
+  }
+  S.busy = false;
+}
+
+async function loadExisting(it) {
+  const v = it.variant;
+  if (v in it.existing) return it.existing[v];
+  try { it.existing[v] = await api(`/api/data?char=${encodeURIComponent(it.char)}&variant=${encodeURIComponent(v)}`); }
+  catch (e) { it.existing[v] = e.status === 404 ? null : undefined; if (e.status !== 404) throw e; }
+  return it.existing[v];
+}
+
+function select(id) {
+  S.cur = id; renderQueue(); renderInspector();
+  const li = $(`.qi[data-id="${id}"]`); if (li) li.scrollIntoView({block: "nearest"});
+}
+function step(d) {
+  if (!S.queue.length) return;
+  const i = S.queue.findIndex(x => x.id === S.cur);
+  const j = Math.max(0, Math.min(S.queue.length - 1, (i < 0 ? 0 : i + d)));
+  select(S.queue[j].id);
+}
+
+/* ---------------- data for the current item ---------------- */
+function currentData(it) {
+  return {
+    strokes: it.order.map(i => it.pred.strokes[i]),
+    medians: it.order.map(i => it.flip[i] ? it.pred.medians[i].slice().reverse() : it.pred.medians[i]),
+  };
+}
+function touch(it) { it.saved = null; it.saveMsg = null; it.editErr = null; renderQueue(); renderInspector({keepScroll: true}); }
+
+/* ---------------- inspector ---------------- */
+let writers = {};
+function killWriters() {
+  for (const w of Object.values(writers)) { try { w.cancelQuiz(); w.pauseAnimation(); } catch {} }
+  writers = {};
+}
+const GUIDE = `<svg class="guide" viewBox="0 0 100 100" preserveAspectRatio="none"><line x1="0" y1="0" x2="100" y2="100"/><line x1="100" y1="0" x2="0" y2="100"/><line x1="50" y1="0" x2="50" y2="100"/><line x1="0" y1="50" x2="100" y2="50"/></svg>`;
+
+function makeWriter(el, char, data, extra = {}) {
+  return HanziWriter.create(el, char, {
+    width: el.clientWidth || 300, height: el.clientHeight || 300, padding: 14,
+    showOutline: true, strokeAnimationSpeed: 1.2, delayBetweenStrokes: 260,
+    strokeColor: css("--ink"), outlineColor: css("--ghost"), radicalColor: css("--ink"),
+    highlightColor: css("--accent"), drawingColor: css("--accent"),
+    charDataLoader: (_c, onLoad) => onLoad(JSON.parse(JSON.stringify(data))),
+    ...extra,
+  });
+}
+// Writing test settings, kept while moving between items.
+S.write = {src: "pred", outline: true, hint: 3, leniency: 1, reversed: false};
+
+function renderInspector(opt = {}) {
+  const root = $("#insp"), sc = $("#insp-scroll"), top = sc.scrollTop;
+  killWriters();
+  const it = S.queue.find(i => i.id === S.cur);
+  if (!it) {
+    root.innerHTML = `<div class="empty" style="padding-top:12vh"><div class="big">筆順</div>
+      Pick an item from the queue to check its strokes in hanzi-writer.<br><br>
+      <span class="kbd">J</span> / <span class="kbd">K</span> next / previous · <span class="kbd">A</span> animate · <span class="kbd">R</span> restart writing test · <span class="kbd">S</span> save<br>
+      On a stroke tile: <span class="kbd">F</span> reverse · <span class="kbd">M</span> merge with next · <span class="kbd">Del</span> delete</div>`;
+    return;
+  }
+  const head = `<div class="ihead"><div class="glyph">${esc(it.char)}</div>
+    <div class="facts"><div class="t">${esc(cp(it.char))} <span class="chip ${itemChip(it)[0]}">${itemChip(it)[1]}</span></div>
+    <div class="muted">${it.font ? "font glyph · " + esc(it.font) : "uploaded · " + esc(it.fileName)}${it.pred ? ` · ${it.order.length} strokes · ${it.ms} ms` : ""}</div></div>
+    <div class="nav"><button class="btn ghost sm" id="prev" title="Previous (K)">↑</button><button class="btn ghost sm" id="next" title="Next (J)">↓</button></div></div>`;
+  if (it.status !== "done") {
+    root.innerHTML = head + (it.status === "error" ? `<div class="errbox">Prediction failed: ${esc(it.error)}</div>`
+      : `<div class="card"><div class="stage">${GUIDE}<div class="note">${it.status === "running" ? "Predicting strokes…" : "Waiting in the queue…"}</div></div></div>`);
+    bindNav(); return;
+  }
+  const data = currentData(it), ex = it.existing[it.variant];
+  const edited = isEdited(it);
+  root.innerHTML = head + `
+    <div class="cards">
+      <div class="card"><h3>Prediction ${edited ? '<span class="chip edited">edited</span>' : ""}</h3>
+        <div class="stage">${GUIDE}<div class="hw" id="hw-pred"></div><div class="quizmsg" id="quiz-msg"></div></div>
+        <div class="ctrls">
+          <button class="btn sm" id="b-anim">▶ Animate</button>
+          <button class="btn sm" id="b-loop">⟳ Loop</button>
+          <button class="btn sm" id="b-quiz">✎ Quiz</button>
+          <button class="btn sm" id="b-show">Show</button>
+        </div></div>
+      <div class="card"><h3>Current training data <span class="muted mono" style="text-transform:none;letter-spacing:0">${esc(it.char + it.variant)}.json</span></h3>
+        <div class="stage">${GUIDE}<div class="hw" id="hw-gt"></div>${ex ? "" : `<div class="note">${ex === null ? "No file yet. Saving creates it." : "Checking…"}</div>`}</div>
+        <div class="ctrls">${ex ? `<button class="btn sm" id="g-anim">▶ Animate</button><span class="muted">${ex.strokes.length} strokes${ex.strokes.length !== data.strokes.length ? ` · prediction has ${data.strokes.length}` : ""}</span>` : ""}</div></div>
+      ${writeCardHtml(ex)}
+    </div>
+    <div class="card"><h3>Stroke order <span class="muted" style="text-transform:none;letter-spacing:0">Drag tiles, or use ◀ ▶ · ⇄ reverses a stroke's direction · ⊕ merges it with the next stroke, ✂ splits it again · ✕ deletes it</span></h3>
+      <div class="order-wrap">
+        <svg class="overview" id="overview" viewBox="0 0 1024 1024">${overviewSvg(data)}</svg>
+        <div><div class="tiles" id="tiles">${data.strokes.map((_, k) => tileHtml(it, data, k)).join("")}</div>
+          <div class="orderline"><span class="muted">Order</span>
+            <input class="input" id="order-in" value="${it.order.map(i => strokeLabel(it, i)).join(" ")}" title="Predicted stroke numbers in writing order, as for tools/reorder_strokes.py (merged strokes are written 3+4)">
+            <button class="btn sm" id="order-apply">Apply</button>
+            <button class="btn ghost sm" id="order-reset" ${edited ? "" : "disabled"}>Reset to prediction</button></div>
+          ${it.deleted.length ? `<div class="deleted" id="deleted"><span class="muted">Deleted</span>${it.deleted.map(x =>
+            `<button class="btn sm" data-restore="${x}" title="Put stroke ${esc(strokeLabel(it, x))} back">${esc(strokeLabel(it, x))} ↺</button>`).join("")}</div>` : ""}
+          <div id="order-err">${it.merging ? `<div class="muted" style="margin-top:8px">Merging…</div>` : it.editErr ? `<div class="errbox" style="margin-top:8px">${esc(it.editErr)}</div>` : ""}</div></div>
+      </div></div>
+    <div class="card"><details class="json" ${S.jsonOpen ? "open" : ""}><summary>JSON <span class="muted" style="text-transform:none;letter-spacing:0">${(JSON.stringify(data).length / 1024).toFixed(1)} KB</span>
+        <span style="flex:1"></span><button class="btn ghost sm" id="j-copy">Copy</button><button class="btn ghost sm" id="j-dl">Download</button></summary>
+      <pre id="json-pre">${esc(prettyJson(data))}</pre></details></div>
+    <div class="commit">
+      <select class="input" id="variant">${VARIANTS.map(([v, l]) => `<option value="${v}" ${v === it.variant ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <span class="path" title="${esc(S.dataDir)}/${esc(it.char + it.variant)}.json">${esc(S.dataDir)}/<b>${esc(it.char + it.variant)}.json</b></span>
+      <button class="btn ${ex ? "danger" : "primary"}" id="commit" ${ex === undefined || it.saving ? "disabled" : ""}>${it.saving ? "Saving…" : ex ? "Overwrite file" : "Save to training data"}</button>
+      ${it.saveMsg ? `<div class="msg ${it.saveMsg.cls}">${esc(it.saveMsg.text)}</div>`
+        : ex && ex.radStrokes ? `<div class="msg warnbox">The current file has radStrokes (radical highlighting). They refer to its old strokes and will be dropped.</div>` : ""}
+    </div>`;
+  if (opt.keepScroll) sc.scrollTop = top;
+
+  writers.pred = makeWriter($("#hw-pred"), it.char, data);
+  if (ex) writers.gt = makeWriter($("#hw-gt"), it.char, ex);
+  bindInspector(it, data);
+  bindWriting(it, writeSrc(ex) === "gt" ? ex : data, writeSrc(ex));
+}
+
+/* ---------------- writing test ---------------- */
+const writeSrc = ex => S.write.src === "gt" && ex ? "gt" : "pred";
+function writeCardHtml(ex) {
+  const W = S.write, src = writeSrc(ex);
+  const opt = (v, l, cur) => `<option value="${v}" ${String(v) === String(cur) ? "selected" : ""}>${l}</option>`;
+  return `<div class="card"><h3>Writing test
+      <span class="tabs mini" id="w-src"><button data-src="pred" class="${src === "pred" ? "on" : ""}">Prediction</button><button data-src="gt" class="${src === "gt" ? "on" : ""}" ${ex ? "" : "disabled title=\"No training data file yet\""}>Training data</button></span></h3>
+    <div class="stage write">${GUIDE}<div class="hw" id="hw-write"></div></div>
+    <div class="wstatus" id="w-status" aria-live="polite"></div>
+    <div class="wres" id="w-res"></div>
+    <div class="ctrls">
+      <button class="btn sm" id="w-restart" title="Start again (R)">↺ Restart</button>
+      <button class="btn sm${W.outline ? " on" : ""}" id="w-outline" title="Show the grey outline to trace">Outline</button>
+      <button class="btn sm${W.reversed ? " on" : ""}" id="w-rev" title="Accept strokes drawn in the opposite direction and mark them in red">Allow reversed</button>
+      <select class="input sm" id="w-hint" title="Show the stroke after this many misses">${opt(0, "No hints", W.hint)}${opt(1, "Hint after 1 miss", W.hint)}${opt(2, "Hint after 2", W.hint)}${opt(3, "Hint after 3", W.hint)}</select>
+      <select class="input sm" id="w-len" title="How closely your stroke has to match">${opt(0.6, "Strict", W.leniency)}${opt(1, "Normal", W.leniency)}${opt(1.5, "Lenient", W.leniency)}</select>
+    </div></div>`;
+}
+
+function bindWriting(it, wdata, src) {
+  const W = S.write, n = wdata.strokes.length, el = $("#hw-write");
+  const res = Array.from({length: n}, () => ({miss: 0, done: false, back: false}));
+  let cur = 0;
+  const status = (text, cls = "") => { const s = $("#w-status"); s.textContent = text; s.className = "wstatus " + cls; };
+  const paint = () => {
+    $("#w-res").innerHTML = res.map((r, k) => {
+      const tip = `Stroke ${k + 1}: ${r.done ? (r.miss ? `${r.miss} miss${r.miss === 1 ? "" : "es"} first` : "first try") : k === cur ? "now" : "not yet"}${r.back ? ", drawn reversed" : ""}`;
+      return `<span class="ws${r.done ? (r.miss ? " miss" : " ok") : r.miss ? " miss" : ""}${r.back ? " back" : ""}${!r.done && k === cur ? " cur" : ""}" data-k="${k}" title="${tip}">${k + 1}${r.miss ? `<sup>${r.miss}</sup>` : ""}</span>`;
+    }).join("");
+  };
+  const start = () => {
+    if (writers.write) { try { writers.write.cancelQuiz(); } catch {} }
+    el.innerHTML = "";
+    const w = writers.write = makeWriter(el, it.char, wdata, {showOutline: W.outline, showCharacter: false});
+    res.forEach(r => Object.assign(r, {miss: 0, done: false, back: false})); cur = 0;
+    w.quiz({
+      leniency: W.leniency, showHintAfterMisses: W.hint || false, acceptBackwardsStrokes: W.reversed, highlightOnComplete: true,
+      onMistake: s => { res[s.strokeNum].miss = s.mistakesOnStroke; paint(); status(`Stroke ${s.strokeNum + 1} not recognized · miss ${s.mistakesOnStroke}`, "bad"); },
+      onCorrectStroke: s => {
+        Object.assign(res[s.strokeNum], {done: true, miss: s.mistakesOnStroke, back: !!s.isBackwards});
+        cur = s.strokeNum + 1; paint();
+        if (s.strokesRemaining) status(s.isBackwards ? `Stroke ${s.strokeNum + 1} was reversed · write stroke ${cur + 1} of ${n}` : `Write stroke ${cur + 1} of ${n}`, s.isBackwards ? "bad" : "");
+      },
+      onComplete: s => {
+        const missed = res.filter(r => r.miss).length, back = res.filter(r => r.back).length;
+        status(`Done · ${s.totalMistakes} miss${s.totalMistakes === 1 ? "" : "es"}` + (missed ? ` on ${missed} stroke${missed === 1 ? "" : "s"}` : "")
+          + (back ? ` · ${back} reversed` : ""), s.totalMistakes || back ? "bad" : "done");
+      },
+    });
+    paint(); status(`Write stroke 1 of ${n}`);
+  };
+  start();
+
+  $("#w-restart").onclick = start;
+  $("#w-src").onclick = e => { const b = e.target.closest("button[data-src]"); if (!b || b.disabled || b.dataset.src === src) return; W.src = b.dataset.src; renderInspector({keepScroll: true}); };
+  $("#w-outline").onclick = e => { W.outline = !W.outline; e.currentTarget.classList.toggle("on", W.outline); start(); };
+  $("#w-rev").onclick = e => { W.reversed = !W.reversed; e.currentTarget.classList.toggle("on", W.reversed); start(); };
+  $("#w-hint").onchange = e => { W.hint = +e.target.value; start(); };
+  $("#w-len").onchange = e => { W.leniency = +e.target.value; start(); };
+  // the prediction's strokes match the tiles, so point at them from the results
+  if (src === "pred") {
+    const hl = k => document.querySelectorAll("#overview .s, #overview .num, .tile").forEach(x => x.classList.toggle("hl", x.dataset.k === String(k)));
+    $("#w-res").onmouseover = e => { const c = e.target.closest(".ws"); hl(c ? c.dataset.k : -1); };
+    $("#w-res").onmouseleave = () => hl(-1);
+  }
+}
+
+function prettyJson(d) {
+  return "{\n  \"strokes\": [\n" + d.strokes.map(s => "    " + JSON.stringify(s)).join(",\n") +
+    "\n  ],\n  \"medians\": [\n" + d.medians.map(m => "    " + JSON.stringify(m)).join(",\n") + "\n  ]\n}";
+}
+
+const HW = `transform="matrix(1 0 0 -1 0 900)"`;   // hanzi-writer frame (y up, baseline 900) -> SVG
+function overviewSvg(d) {
+  const strokes = d.strokes.map((s, k) => `<path class="s" data-k="${k}" d="${esc(s)}"/>`).join("");
+  const meds = d.medians.map(m => `<polyline class="m" points="${m.map(p => p.join(",")).join(" ")}"/>`).join("");
+  const nums = d.medians.map((m, k) => {
+    const [x, y] = m[0];
+    return `<g class="num" data-k="${k}"><circle cx="${x}" cy="${900 - y}" r="34"/><text x="${x}" y="${900 - y}">${k + 1}</text></g>`;
+  }).join("");
+  return `<g ${HW}>${strokes}${meds}</g>${nums}`;
+}
+function tileHtml(it, d, k) {
+  const m = d.medians[k], src = it.order[k];
+  const bg = d.strokes.map((s, j) => j === k ? "" : `<path class="bg" d="${esc(s)}"/>`).join("");
+  const [sx, sy] = m[0];
+  const merged = !!it.parts[src], last = k === d.strokes.length - 1;
+  return `<div class="tile${src !== k ? " moved" : ""}" draggable="true" data-k="${k}" tabindex="0" title="Stroke ${k + 1}${src !== k ? ` (predicted #${strokeLabel(it, src)})` : ""}">
+    <button class="del" data-act="del" title="Delete this stroke (Del)" ${d.strokes.length === 1 || it.merging ? "disabled" : ""}>✕</button>
+    <svg viewBox="0 0 1024 1024"><g ${HW}>${bg}<path class="fg" d="${esc(d.strokes[k])}"/>
+      <polyline class="m" points="${m.map(p => p.join(",")).join(" ")}"/><circle class="st" cx="${sx}" cy="${sy}" r="34"/></g></svg>
+    <div class="bar"><span class="n">${k + 1}</span><span class="sp"></span>
+      <button data-act="left" title="Earlier" ${k === 0 ? "disabled" : ""}>◀</button>
+      <button data-act="flip" class="${it.flip[src] ? "flipped" : ""}" title="Reverse direction (F)">⇄</button>
+      <button data-act="merge" title="Merge with the next stroke (M)" ${last || it.merging ? "disabled" : ""}>⊕</button>
+      ${merged ? `<button data-act="split" title="Split back into ${esc(strokeLabel(it, src).replace(/\+/g, " and "))}">✂</button>` : ""}
+      <button data-act="right" title="Later" ${last ? "disabled" : ""}>▶</button></div></div>`;
+}
+
+/* Join stroke k and k + 1. The server rebuilds the outline from the font segments of both. */
+async function mergeAt(it, k) {
+  if (it.merging || k < 0 || k + 1 >= it.order.length) return;
+  if (!Array.isArray(it.segStroke)) {
+    it.editErr = "This glyph was processed by an older dashboard server. Restart the server, reload this page and process the glyph again to merge its strokes.";
+    return renderInspector({keepScroll: true});
+  }
+  const a = it.order[k], b = it.order[k + 1], d = currentData(it);
+  it.merging = true; it.editErr = null; renderInspector({keepScroll: true});
+  try {
+    const r = await api("/api/merge", {...(it.svg ? {svg: it.svg} : {font: it.font, char: it.char}),
+      segStroke: it.segStroke, parts: [...baseIds(it, a), ...baseIds(it, b)], first: d.medians[k], second: d.medians[k + 1]});
+    if (it.order.indexOf(a) < 0 || it.order.indexOf(b) < 0) throw new Error("the strokes changed while merging, try again");
+    const n = it.pred.strokes.push(r.stroke) - 1;
+    it.pred.medians.push(r.median); it.flip.push(false); it.parts[n] = [a, b];
+    it.order.splice(it.order.indexOf(b), 1);
+    it.order[it.order.indexOf(a)] = n;
+    it.merging = false; touch(it);
+    if (S.cur === it.id) { const t = $(`.tile[data-k="${it.order.indexOf(n)}"]`); if (t) t.focus(); }
+  } catch (e) {
+    it.merging = false; it.editErr = `Merge failed: ${e.message}`;
+    if (S.cur === it.id) renderInspector({keepScroll: true});
+  }
+}
+function splitAt(it, k) {
+  const parts = it.parts[it.order[k]]; if (!parts) return;
+  it.order.splice(k, 1, ...parts); touch(it);
+}
+// Take stroke k out of the order (it stays restorable). At least one stroke has to remain.
+function deleteAt(it, k) {
+  if (it.merging || it.order.length <= 1 || k < 0 || k >= it.order.length) return;
+  it.deleted.push(...it.order.splice(k, 1)); touch(it);
+  const t = $(`.tile[data-k="${Math.min(k, it.order.length - 1)}"]`); if (t) t.focus();
+}
+// Put a deleted stroke back, before the first stroke that was predicted after it.
+function restoreStroke(it, x) {
+  const i = it.deleted.indexOf(x); if (i < 0) return;
+  it.deleted.splice(i, 1);
+  const first = j => Math.min(...baseIds(it, j));
+  const at = it.order.findIndex(j => first(j) > first(x));
+  it.order.splice(at < 0 ? it.order.length : at, 0, x); touch(it);
+}
+
+function bindNav() { $("#prev").onclick = () => step(-1); $("#next").onclick = () => step(1); }
+
+function move(it, from, to) {
+  if (to < 0 || to >= it.order.length || from === to) return;
+  const [x] = it.order.splice(from, 1); it.order.splice(to, 0, x); touch(it);
+}
+
+function bindInspector(it, data) {
+  bindNav();
+  const w = writers.pred, msg = $("#quiz-msg");
+  const setOn = id => ["b-loop", "b-quiz"].forEach(b => $("#" + b).classList.toggle("on", b === id));
+  const reset = () => { try { w.cancelQuiz(); } catch {} msg.textContent = ""; setOn(null); };
+  $("#b-anim").onclick = () => { reset(); w.showOutline(); w.animateCharacter(); };
+  $("#b-loop").onclick = () => { reset(); setOn("b-loop"); w.loopCharacterAnimation(); };
+  $("#b-show").onclick = () => { reset(); w.pauseAnimation(); w.showCharacter(); };
+  $("#b-quiz").onclick = () => {
+    reset(); setOn("b-quiz"); w.pauseAnimation();
+    msg.textContent = `Write stroke 1 of ${data.strokes.length}`;
+    w.quiz({
+      onCorrectStroke: s => { msg.textContent = s.strokesRemaining ? `Stroke ${s.strokeNum + 2} of ${data.strokes.length}` : ""; },
+      onComplete: s => { msg.textContent = `Done · ${s.totalMistakes} mistake${s.totalMistakes === 1 ? "" : "s"}`; setOn(null); },
+    });
+  };
+  if (writers.gt) $("#g-anim").onclick = () => writers.gt.animateCharacter();
+
+  // highlight stroke on hover (overview + tiles)
+  const hl = k => {
+    document.querySelectorAll("#overview .s, #overview .num, .tile").forEach(el => el.classList.toggle("hl", el.dataset.k === String(k)));
+  };
+  const tiles = $("#tiles");
+  tiles.addEventListener("mouseover", e => { const t = e.target.closest(".tile"); hl(t ? t.dataset.k : -1); });
+  tiles.addEventListener("mouseleave", () => hl(-1));
+  tiles.addEventListener("focusin", e => { const t = e.target.closest(".tile"); if (t) hl(t.dataset.k); });
+  $("#overview").addEventListener("mouseover", e => { const t = e.target.closest("[data-k]"); hl(t ? t.dataset.k : -1); });
+  $("#overview").addEventListener("mouseleave", () => hl(-1));
+
+  tiles.addEventListener("click", e => {
+    const b = e.target.closest("button[data-act]"); if (!b) return;
+    const k = +b.closest(".tile").dataset.k;
+    if (b.dataset.act === "del") return deleteAt(it, k);
+    if (b.dataset.act === "merge") return mergeAt(it, k);
+    if (b.dataset.act === "split") { splitAt(it, k); const t = $(`.tile[data-k="${k}"]`); if (t) t.focus(); return; }
+    if (b.dataset.act === "left") move(it, k, k - 1);
+    else if (b.dataset.act === "right") move(it, k, k + 1);
+    else { it.flip[it.order[k]] = !it.flip[it.order[k]]; touch(it); }
+    const t = $(`.tile[data-k="${b.dataset.act === "left" ? k - 1 : b.dataset.act === "right" ? k + 1 : k}"]`); if (t) t.focus();
+  });
+  tiles.addEventListener("keydown", e => {
+    const t = e.target.closest(".tile"); if (!t || e.target !== t) return;
+    const k = +t.dataset.k;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault(); e.stopPropagation();
+      const to = k + (e.key === "ArrowLeft" ? -1 : 1);
+      if (e.altKey || e.shiftKey) { move(it, k, to); }
+      const n = $(`.tile[data-k="${Math.max(0, Math.min(it.order.length - 1, to))}"]`); if (n) n.focus();
+    } else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); e.stopPropagation(); deleteAt(it, k);
+    } else if (e.key === "m") { e.stopPropagation(); mergeAt(it, k);
+    } else if (e.key === "f") { e.stopPropagation(); it.flip[it.order[k]] = !it.flip[it.order[k]]; touch(it); const n = $(`.tile[data-k="${k}"]`); if (n) n.focus(); }
+  });
+
+  // drag and drop
+  let dragK = null;
+  tiles.addEventListener("dragstart", e => {
+    const t = e.target.closest(".tile"); if (!t) return;
+    dragK = +t.dataset.k; t.classList.add("dragging"); e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", String(dragK));
+  });
+  const clearDrop = () => tiles.querySelectorAll(".drop-before,.drop-after").forEach(x => x.classList.remove("drop-before", "drop-after"));
+  const dropPos = (t, e) => { const r = t.getBoundingClientRect(); return e.clientX < r.left + r.width / 2 ? "before" : "after"; };
+  tiles.addEventListener("dragover", e => {
+    const t = e.target.closest(".tile"); if (!t || dragK == null) return;
+    e.preventDefault(); clearDrop(); t.classList.add("drop-" + dropPos(t, e));
+  });
+  tiles.addEventListener("dragleave", e => { if (!tiles.contains(e.relatedTarget)) clearDrop(); });
+  tiles.addEventListener("drop", e => {
+    const t = e.target.closest(".tile"); if (!t || dragK == null) return;
+    e.preventDefault();
+    let to = +t.dataset.k + (dropPos(t, e) === "after" ? 1 : 0);
+    if (to > dragK) to--;
+    const from = dragK; dragK = null; move(it, from, to);
+  });
+  tiles.addEventListener("dragend", () => { dragK = null; clearDrop(); tiles.querySelectorAll(".dragging").forEach(x => x.classList.remove("dragging")); });
+
+  // order text field
+  const applyOrder = () => {
+    const byLabel = new Map(it.order.map(i => [strokeLabel(it, i), i]));
+    const toks = $("#order-in").value.trim().split(/[\s,]+/).map(t => t.replace(/\s/g, ""));
+    const idx = toks.map(t => byLabel.get(t));
+    const ok = idx.length === it.order.length && idx.every(i => i !== undefined) && new Set(idx).size === idx.length;
+    if (!ok) {
+      const merged = it.order.length < it.base;
+      $("#order-err").innerHTML = `<div class="errbox" style="margin-top:8px">Use each stroke exactly once: ${esc([...byLabel.keys()].sort((a, b) => parseInt(a) - parseInt(b)).join(" "))}${merged ? " (merged strokes are written with +)" : ""}.</div>`;
+      return;
+    }
+    it.order = idx; touch(it);
+  };
+  $("#order-apply").onclick = applyOrder;
+  $("#order-in").onkeydown = e => { if (e.key === "Enter") applyOrder(); };
+  $("#order-reset").onclick = () => {
+    const n = it.base;
+    it.pred.strokes.length = n; it.pred.medians.length = n; it.parts = {}; it.deleted = [];
+    it.order = [...Array(n).keys()]; it.flip = Array(n).fill(false); touch(it);
+  };
+  const del = $("#deleted");
+  if (del) del.onclick = e => { const b = e.target.closest("[data-restore]"); if (b) restoreStroke(it, +b.dataset.restore); };
+
+  // json
+  $("details.json").ontoggle = e => { S.jsonOpen = e.target.open; };
+  $("#j-copy").onclick = e => { e.preventDefault(); navigator.clipboard.writeText(JSON.stringify(data)).then(() => { e.target.textContent = "Copied"; setTimeout(() => e.target.textContent = "Copy", 1200); }); };
+  $("#j-dl").onclick = e => {
+    e.preventDefault();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], {type: "application/json"}));
+    a.download = it.char + it.variant + ".json"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+
+  // commit
+  $("#variant").onchange = async e => {
+    it.variant = e.target.value; it.saved = null; it.saveMsg = null; renderQueue(); renderInspector({keepScroll: true});
+    try { await loadExisting(it); } catch (err) { it.saveMsg = {cls: "errbox", text: err.message}; }
+    if (S.cur === it.id) renderInspector({keepScroll: true});
+  };
+  $("#commit").onclick = () => commit(it);
+}
+
+async function commit(it, quiet = false) {
+  const ex = it.existing[it.variant];
+  it.saving = true; if (!quiet) renderInspector({keepScroll: true});
+  try {
+    const r = await api("/api/commit", {char: it.char, variant: it.variant, data: currentData(it), overwrite: !!ex});
+    it.saved = r.path;
+    it.saveMsg = {cls: "okbox", text: `${r.overwrote ? "Overwrote" : "Created"} ${r.path} · ${r.note}`};
+    it.existing[it.variant] = currentData(it);
+    if (it.variant === "" && S.glyphs && S.glyphs.has.has(it.char)) {
+      S.glyphs.has.set(it.char, true);
+      if (!quiet && S.tab === "fonts") renderGrid();
+    }
+  } catch (e) {
+    it.saveMsg = {cls: "errbox", text: e.status === 409 ? `${e.message}. Reload the item to compare first.` : `Save failed: ${e.message}`};
+    if (e.status === 409) delete it.existing[it.variant];
+  }
+  it.saving = false;
+  renderQueue();
+  if (S.cur === it.id) renderInspector({keepScroll: true});
+  return !!it.saved;
+}
+
+/* ---------------- save all ---------------- */
+$("#save-all").onclick = () => {
+  const items = S.queue.filter(i => i.status === "done" && !i.saved);
+  const over = items.filter(i => i.existing[i.variant]).length;
+  const edited = items.filter(isEdited).length;
+  $("#modal-root").innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true">
+    <h2>Save ${items.length} file${items.length === 1 ? "" : "s"}?</h2>
+    <div>${items.length - edited} unchanged prediction${items.length - edited === 1 ? "" : "s"}, ${edited} with your edits.</div>
+    ${over ? `<div class="warnbox">${over} of them will overwrite existing training data.</div>` : ""}
+    <div class="row"><button class="btn ghost" id="m-cancel">Cancel</button><button class="btn ${over ? "danger" : "primary"}" id="m-ok">${over ? "Save and overwrite" : "Save"}</button></div>
+  </div></div>`;
+  const close = () => { $("#modal-root").innerHTML = ""; };
+  $("#m-cancel").onclick = close;
+  $(".modal-bg").onclick = e => { if (e.target === e.currentTarget) close(); };
+  $("#m-ok").onclick = async () => {
+    close(); S.saving = true; renderQueue();
+    let ok = 0;
+    for (const it of items) {
+      if (!(it.variant in it.existing)) { try { await loadExisting(it); } catch {} }
+      if (await commit(it, true)) ok++;
+    }
+    S.saving = false; renderQueue(); renderInspector({keepScroll: true});
+    if (S.tab === "fonts") renderGrid();
+    if (ok < items.length) alertBox(`${items.length - ok} file${items.length - ok === 1 ? "" : "s"} could not be saved. Open the failed items for details.`);
+  };
+  $("#m-ok").focus();
+};
+function alertBox(text) {
+  $("#modal-root").innerHTML = `<div class="modal-bg"><div class="modal"><div>${esc(text)}</div><div class="row"><button class="btn primary" id="m-ok">OK</button></div></div></div>`;
+  $("#m-ok").onclick = () => { $("#modal-root").innerHTML = ""; }; $("#m-ok").focus();
+}
+
+/* ---------------- keyboard ---------------- */
+document.addEventListener("keydown", e => {
+  if (e.target.closest("input, select, textarea") || e.ctrlKey || e.metaKey || e.altKey) return;
+  if ($("#modal-root").firstChild) { if (e.key === "Escape") $("#modal-root").innerHTML = ""; return; }
+  if (e.key === "j") step(1);
+  else if (e.key === "k") step(-1);
+  else if (e.key === "a" && $("#b-anim")) $("#b-anim").click();
+  else if (e.key === "r" && $("#w-restart")) $("#w-restart").click();
+  else if (e.key === "s" && $("#commit") && !$("#commit").disabled) $("#commit").click();
+});
+
+renderInspector();
+renderSelbar();
+pollStatus();
+</script>
+</body>
+</html>

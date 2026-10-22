@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+data/processed/
+checkpoints/
+outputs/
+*.egg-info/
+
+*.svg

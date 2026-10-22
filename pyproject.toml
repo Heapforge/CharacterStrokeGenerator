@@ -1,0 +1,23 @@
+[project]
+name = "strokegen"
+version = "0.1.0"
+description = "Cut CJK glyph outline SVGs into strokes and emit hanzi-writer data"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy",
+    "scipy",
+    "shapely",
+    "pycairo",
+    "torch",
+    "tqdm",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["strokegen"]

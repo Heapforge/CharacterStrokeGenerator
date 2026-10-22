@@ -1,0 +1,3 @@
+[submodule "training_data/hanzi-writer-data-youyin"]
+	path = training_data/hanzi-writer-data-youyin
+	url = https://github.com/MadLadSquad/hanzi-writer-data-youyin

@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+title: 'CharacterStrokeGenerator'
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Stanislav
+    family-names: Lyubomirov Vasilev
+    email: stanislav.vasilev@heapforge.com
+    orcid: 'https://orcid.org/0009-0005-8379-6124'
+  - name: Heapforge Ltd.
+    address: 82A James Carter Road
+    city: Mildenhall
+    country: GB
+    region: Suffolk
+    email: contact@heapforge.com
+    website: 'https://heapforge.com'
+    post-code: IP28 7DE
+repository-code: 'https://github.com/Heapforge/CharacterStrokeGenerator'
+abstract: 'A fully open-source ML model for dividing any character in any vector font into strokes with output that is compatible with hanzi-writer.'
+license: MIT
+
