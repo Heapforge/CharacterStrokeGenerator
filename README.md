@@ -1,7 +1,20 @@
 # CharacterStrokeGenerator
+A machine learning model and toolchain for turning regular font SVGs of characters into SVGs
+split into strokes with medians in [hanzi-writer](https://github.com/chanind/hanzi-writer) format.
 
-Turns a CJK glyph outline SVG (Kai style, as exported by `training_data/scripts/export_glyphs.py`) into
-[hanzi-writer](https://hanziwriter.org) data: `{"strokes": [...], "medians": [...]}`.
+## Usage
+We use this ML model to automatically generate and split characters to feed 
+[hanzi-writer-data-youyin](https://github.com/MadLadSquad/hanzi-writer-data-youyin) with additional character data.
+
+Our goal is to completely automate away splitting any character from any font from any writing system into strokes.
+Such a model can produce valuable data with applications in:
+
+- Live handwriting recognition
+- Language-learning apps
+- Automated generation of learning sheets for calligraphers and pre-school children
+
+The model is fed on about 15K characters from [hanzi-writer-data-youyin](https://github.com/MadLadSquad/hanzi-writer-data-youyin),
+of which 11K were in the original dataset and the rest are data generated from the model that has passed human verification.
 
 ## Pipeline
 
@@ -55,23 +68,12 @@ uv run python tools/dashboard.py          # review dashboard on http://127.0.0.1
    Overwriting an existing file needs an explicit **Overwrite** click. Existing `radStrokes`
    are dropped because they refer to the old strokes.
 
-## Training data
+## How we fix issues with characters
+This model is still early in its training phase and as a result cannot be trusted. Many characters,
+especially ones generated from non-CJK scripts are often completely broken once processed by the model.
 
-Only plain `{char}.json` files are used; `-jp`/`-ko` variants are ignored. About 9,500 characters
-match a font exactly: their hw strokes are cut from the gkai00mp, bkai00mp or ukai-cn outline. The
-~1,660 that don't match come from AnimCJK outlines (kana, Japan-only kanji) and are skipped.
-Splits are by character, 90/5/5 with a fixed seed.
-
-## Results (held-out test split, 475 characters)
-
-| Metric | Value |
-|---|---|
-| Strokes cut exactly right | 99.2% |
-| Glyphs where every stroke is cut exactly right | 94.7% |
-| Union of strokes vs. original render (IoU, mean / worst) | 0.9993 / 0.991 |
-| Median distance to GT (1024-unit em) | 4.8 |
-| Stroke direction accuracy | 99.9% |
-| Exact stroke order (GT strokes / end to end) | 93.1% / 88.6% |
-| Glyphs fully correct (cut + order + direction) | 88.6% |
-
-`outputs/preview.html` shows predictions next to the GT, with hanzi-writer animation.
+To automate away the fixing of broken results we use general-purpose multimodal LLM models for fixing these characters in-place.
+Currently, we use Claude Opus 5.5 to analyze general patterns in broken characters, which then turn into automated scripts for some
+issues, while everything else that's more complex is analyzed and fixed by Sonnet 5.5 subagents manually. The subagents prompt from
+Opus is also inputted into Antigravity, where we use Gemini 3.8 Flash High to fix characters, though results often require a lot of corrections,
+since Gemini often does not produce any scripts to fix common issues.
