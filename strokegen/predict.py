@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
 import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import shapely
@@ -17,15 +19,35 @@ import torch
 from shapely.geometry import Polygon
 from shapely.validation import make_valid
 
+from ._batch import stage_a_from_contours, stage_a_from_file, stage_a_from_svg, stage_bc_prep
 from .data import collate, to_device
 from .decode import assemble_strokes, partition_from_predictions
 from .features import glyph_features
 from .medians import stroke_median
 from .model import CutModel
-from .order import decode_order, pair_features, stroke_features, stroke_record
+from .order import N_PFEAT, N_SFEAT, decode_order, pair_features, stroke_features, stroke_record
 from .svg_io import contour_polygon, load_svg_glyph, segs_to_path
 from .train_cut import CKPT
 from .train_order import OrderNet
+
+
+def _empty_result(lab: np.ndarray | None = None) -> dict:
+    empty = np.zeros(0, np.int64)
+    part = empty if lab is None else lab
+    seg = empty if lab is None else np.full(len(lab), -1, np.int64)
+    return dict(strokes=[], medians=[], _partition=part, _order=empty, _seg_stroke=seg)
+
+
+def _cut_batch_size(max_n: int) -> int:
+    if max_n <= 96:
+        return 64
+    if max_n <= 192:
+        return 32
+    if max_n <= 384:
+        return 8
+    if max_n <= 768:
+        return 2
+    return 1
 
 
 class StrokeGenerator:
@@ -39,6 +61,27 @@ class StrokeGenerator:
         ok = torch.load(order_ckpt, map_location="cpu", weights_only=False)
         self.order = OrderNet(layers=ok["args"].get("layers", 6)).to(self.dev).eval()
         self.order.load_state_dict(ok["model"])
+        self._pool: ProcessPoolExecutor | None = None
+        self._pool_workers = 0
+
+    def close(self) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
+            self._pool_workers = 0
+
+    def _map(self, fn, items: list, workers: int | None) -> list:
+        if not items:
+            return []
+        w = workers if workers is not None else min(os.cpu_count() or 4, 16)
+        if w <= 1 or len(items) <= 2:
+            return [fn(x) for x in items]
+        if self._pool is None or self._pool_workers != w:
+            self.close()
+            self._pool = ProcessPoolExecutor(max_workers=w, mp_context=mp.get_context("spawn"))
+            self._pool_workers = w
+        chunksize = max(1, len(items) // (w * 4))
+        return list(self._pool.map(fn, items, chunksize=chunksize))
 
     @torch.no_grad()
     def partition(self, contours) -> np.ndarray:
@@ -65,11 +108,12 @@ class StrokeGenerator:
     def predict_contours(self, contours, labels: np.ndarray | None = None) -> dict:
         """hanzi-writer dict for one glyph. Pass `labels` to skip Stage A (e.g. GT partition)."""
         if not contours:
-            empty = np.zeros(0, np.int64)
-            return dict(strokes=[], medians=[], _partition=empty, _order=empty, _seg_stroke=empty)
+            return _empty_result()
         lab = self.partition(contours) if labels is None else labels
         assembled = assemble_strokes(contours, lab)
         kept = [k for k, s in enumerate(assembled) if s]
+        if not kept:
+            return _empty_result(lab)
         strokes = [assembled[k] for k in kept]
         records = [stroke_record(loops) for loops in strokes]
         order, flip = self.order_strokes(records)
@@ -82,6 +126,111 @@ class StrokeGenerator:
         pos = {kept[int(r)]: p for p, r in enumerate(order)}
         seg_stroke = np.array([pos.get(int(v), -1) for v in lab], np.int64)
         return dict(strokes=out_s, medians=out_m, _partition=lab, _order=order, _seg_stroke=seg_stroke)
+
+    @torch.no_grad()
+    def _predict_batch(self, stage_a_fn, inputs: list, workers: int | None = None,
+                       chunk_size: int = 512) -> list[dict | None]:
+        results: list[dict | None] = [None] * len(inputs)
+        for start in range(0, len(inputs), chunk_size):
+            chunk = inputs[start : start + chunk_size]
+            prepped = self._map(stage_a_fn, chunk, workers)
+            valid: list[tuple[int, list, dict]] = []
+            for local_i, (contours, feat) in enumerate(prepped):
+                g_idx = start + local_i
+                if contours is None:
+                    results[g_idx] = None
+                elif not contours or feat is None:
+                    results[g_idx] = _empty_result()
+                else:
+                    valid.append((g_idx, contours, feat))
+            del prepped
+            if not valid:
+                continue
+
+            valid.sort(key=lambda t: len(t[2]["feat"]))
+            bc_inputs: list[tuple[int, tuple[list, np.ndarray, np.ndarray]]] = []
+            i = 0
+            while i < len(valid):
+                j = i
+                sub = []
+                while j < len(valid):
+                    limit = _cut_batch_size(len(valid[j][2]["feat"]))
+                    if sub and len(sub) >= limit:
+                        break
+                    sub.append(valid[j])
+                    j += 1
+                    if len(sub) >= limit:
+                        break
+                i = j
+                feats = []
+                for b, (_, _, f) in enumerate(sub):
+                    f["index"] = b
+                    feats.append(f)
+                batch = to_device(collate(feats), self.dev)
+                with torch.autocast(self.dev.type, dtype=torch.float16, enabled=self.dev.type == "cuda"):
+                    out = self.cut(batch)
+                cut_all = torch.sigmoid(out["cut"].float()).cpu().numpy()
+                aff_all = torch.sigmoid(out["aff"].float()).cpu().numpy()
+                for b, (g_idx, contours, f) in enumerate(sub):
+                    n = len(f["feat"])
+                    bc_inputs.append((g_idx, (contours, cut_all[b, :n].copy(), aff_all[b, :n, :n].copy())))
+            del valid
+
+            bc_out = self._map(stage_bc_prep, [x[1] for x in bc_inputs], workers)
+            order_valid = []
+            for (g_idx, _), (lab, kept, paths, medians, sfeat, pfeat) in zip(bc_inputs, bc_out):
+                if not kept:
+                    results[g_idx] = _empty_result(lab)
+                else:
+                    order_valid.append((g_idx, lab, kept, paths, medians, sfeat, pfeat))
+            del bc_inputs, bc_out
+            if not order_valid:
+                continue
+
+            order_valid.sort(key=lambda t: len(t[2]))
+            for k in range(0, len(order_valid), 128):
+                sub = order_valid[k : k + 128]
+                B = len(sub)
+                max_s = max(len(t[2]) for t in sub)
+                x = torch.zeros(B, max_s, N_SFEAT, dtype=torch.float32)
+                pair = torch.zeros(B, max_s, max_s, N_PFEAT, dtype=torch.float32)
+                pad = torch.ones(B, max_s, dtype=torch.bool)
+                for b, (_, _, kept, _, _, sfeat, pfeat) in enumerate(sub):
+                    s = len(kept)
+                    x[b, :s] = torch.from_numpy(sfeat)
+                    pair[b, :s, :s] = torch.from_numpy(pfeat)
+                    pad[b, :s] = False
+                out = self.order(x.to(self.dev), pad.to(self.dev), pair.to(self.dev))
+                dl = out["dir"].float().cpu().numpy()
+                pl = out["prec"].float().cpu().numpy()
+                for b, (g_idx, lab, kept, paths, medians, _, _) in enumerate(sub):
+                    s = len(kept)
+                    flip = dl[b, :s] > 0
+                    order = decode_order(pl[b, :s, :s])
+                    out_s, out_m = [], []
+                    for idx in order:
+                        out_s.append(paths[idx])
+                        m = medians[idx][::-1] if flip[idx] else medians[idx]
+                        out_m.append([[int(px), int(py)] for px, py in m])
+                    pos = {kept[int(r)]: p for p, r in enumerate(order)}
+                    seg_stroke = np.array([pos.get(int(v), -1) for v in lab], np.int64)
+                    results[g_idx] = dict(strokes=out_s, medians=out_m, _partition=lab, _order=order,
+                                          _seg_stroke=seg_stroke)
+        return results
+
+    def predict_contours_batch(self, contours_list: list, workers: int | None = None) -> list[dict]:
+        """Bulk parallel prediction for a list of parsed glyph contours."""
+        return [r if r is not None else _empty_result()
+                for r in self._predict_batch(stage_a_from_contours, contours_list, workers=workers)]
+
+    def predict_svgs_batch(self, svgs: list[str], workers: int | None = None) -> list[dict]:
+        """Bulk parallel prediction for a list of SVG strings."""
+        return [r if r is not None else _empty_result()
+                for r in self._predict_batch(stage_a_from_svg, svgs, workers=workers)]
+
+    def predict_files_batch(self, paths: list[str | None], workers: int | None = None) -> list[dict | None]:
+        """Bulk parallel prediction for a list of SVG file paths (None for missing files)."""
+        return self._predict_batch(stage_a_from_file, paths, workers=workers)
 
     def predict_svg(self, svg_text: str) -> dict:
         r = self.predict_contours(load_svg_glyph(svg_text))

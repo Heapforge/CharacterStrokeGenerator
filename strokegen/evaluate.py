@@ -278,7 +278,7 @@ def records_for_chars(chars: str) -> list[dict]:
         if c not in man or not man[c]["fonts"]:
             print(f"{c}: no font glyph for this character, skipped")
             continue
-        _, rec, status = process((c, man[c]), min_coverage=0.8)
+        _, rec, status = process((c, man[c]))
         if rec is None:
             print(f"{c}: no exact ground truth ({status}), skipped")
             continue

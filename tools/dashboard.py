@@ -14,7 +14,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -26,11 +29,36 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 GLYPHS = os.path.join(ROOT, "training_data", "font_glyphs")
+FONTS_DIR = os.path.join(ROOT, "training_data", "fonts")
+EXPORT_SCRIPT = os.path.join(ROOT, "training_data", "scripts", "export_glyphs.py")
 HWDATA = os.path.join(ROOT, "training_data", "hanzi-writer-data-youyin", "data")
 MANIFEST = os.path.join(GLYPHS, "manifest.json")
 PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
 VARIANTS = ("", "-jp", "-ko")
-MAX_BODY = 8 * 1024 * 1024
+MAX_BODY = 16 * 1024 * 1024
+
+FONT_FILES: dict[str, str] = {
+    "bkai00mp": os.path.join(FONTS_DIR, "arphic", "bkai00mp.ttf"),
+    "gkai00mp": os.path.join(FONTS_DIR, "arphic", "gkai00mp.ttf"),
+    "ukai-cn": f"{os.path.join(FONTS_DIR, 'arphic', 'ukai.ttc')}(AR PL UKai CN)",
+    "ukai-hk": f"{os.path.join(FONTS_DIR, 'arphic', 'ukai.ttc')}(AR PL UKai HK)",
+    "ukai-tw": f"{os.path.join(FONTS_DIR, 'arphic', 'ukai.ttc')}(AR PL UKai TW)",
+    "ukai-tw-mbe": f"{os.path.join(FONTS_DIR, 'arphic', 'ukai.ttc')}(AR PL UKai TW MBE)",
+    "noto-sans": os.path.join(FONTS_DIR, "noto", "NotoSans-Regular.ttf"),
+    "ubuntu": os.path.join(FONTS_DIR, "ubuntu", "Ubuntu-R.ttf"),
+    "liberation-serif": os.path.join(FONTS_DIR, "liberation", "LiberationSerif-Regular.ttf"),
+    "merriweather": os.path.join(FONTS_DIR, "merriweather", "Merriweather-Regular.ttf"),
+    "noto-sans-cjk-sc": f"{os.path.join(FONTS_DIR, 'noto-cjk', 'NotoSansCJK-Regular.ttc')}(Noto Sans CJK SC)",
+    "noto-sans-cjk-hk": f"{os.path.join(FONTS_DIR, 'noto-cjk', 'NotoSansCJK-Regular.ttc')}(Noto Sans CJK HK)",
+    "noto-sans-cjk-tc": f"{os.path.join(FONTS_DIR, 'noto-cjk', 'NotoSansCJK-Regular.ttc')}(Noto Sans CJK TC)",
+    "noto-sans-cjk-jp": f"{os.path.join(FONTS_DIR, 'noto-cjk', 'NotoSansCJK-Regular.ttc')}(Noto Sans CJK JP)",
+    "noto-sans-cjk-kr": f"{os.path.join(FONTS_DIR, 'noto-cjk', 'NotoSansCJK-Regular.ttc')}(Noto Sans CJK KR)",
+    "noto-serif-cjk-sc": f"{os.path.join(FONTS_DIR, 'noto-cjk', 'NotoSerifCJK-Regular.ttc')}(Noto Serif CJK SC)",
+    "noto-serif-cjk-hk": f"{os.path.join(FONTS_DIR, 'noto-cjk', 'NotoSerifCJK-Regular.ttc')}(Noto Serif CJK HK)",
+    "noto-serif-cjk-tc": f"{os.path.join(FONTS_DIR, 'noto-cjk', 'NotoSerifCJK-Regular.ttc')}(Noto Serif CJK TC)",
+    "noto-serif-cjk-jp": f"{os.path.join(FONTS_DIR, 'noto-cjk', 'NotoSerifCJK-Regular.ttc')}(Noto Serif CJK JP)",
+    "noto-serif-cjk-kr": f"{os.path.join(FONTS_DIR, 'noto-cjk', 'NotoSerifCJK-Regular.ttc')}(Noto Serif CJK KR)",
+}
 
 
 class Model:
@@ -62,6 +90,18 @@ class Model:
             r = self.gen.predict_contours(load_svg_glyph(svg_text))
         return {"strokes": r["strokes"], "medians": r["medians"], "segStroke": r["_seg_stroke"].tolist()}
 
+    def predict_files_batch(self, paths: list[str | None]) -> list[dict | None]:
+        self.ready.wait()
+        if self.gen is None:
+            raise RuntimeError(f"model failed to load: {self.error}")
+        with self.lock:
+            raw = self.gen.predict_files_batch(paths)
+        return [
+            None if r is None else {"strokes": r["strokes"], "medians": r["medians"],
+                                    "segStroke": r["_seg_stroke"].tolist()}
+            for r in raw
+        ]
+
     def status(self) -> dict:
         if not self.ready.is_set():
             return {"state": "loading"}
@@ -70,8 +110,73 @@ class Model:
         return {"state": "ready", "device": self.device}
 
 
+def _font_binary_exists(spec: str) -> bool:
+    return os.path.exists(spec.split("(", 1)[0])
+
+
 def font_names() -> list[str]:
-    return sorted(d for d in os.listdir(GLYPHS) if os.path.isdir(os.path.join(GLYPHS, d)))
+    dirs = {d for d in os.listdir(GLYPHS) if os.path.isdir(os.path.join(GLYPHS, d))} if os.path.isdir(GLYPHS) else set()
+    srcs = {f for f, spec in FONT_FILES.items() if _font_binary_exists(spec)}
+    return sorted(dirs | srcs)
+
+
+_unpack_guard = threading.Lock()
+_unpack_locks: dict[str, threading.Lock] = {}
+_absent_chars: dict[tuple[str, str], set[str]] = {}
+_ff_python: str | None = None
+
+
+def _fontforge_python() -> str:
+    global _ff_python
+    if _ff_python is not None:
+        return _ff_python
+    for cand in ("/usr/bin/python3", shutil.which("python3"), sys.executable):
+        if cand and os.path.exists(cand):
+            r = subprocess.run([cand, "-I", "-c", "import fontforge"], capture_output=True)
+            if r.returncode == 0:
+                _ff_python = cand
+                return cand
+    raise RuntimeError("FontForge Python bindings are required to unpack font binaries")
+
+
+def unpack_font_chars(font: str, chars: list[str] | None = None) -> str:
+    """Ensure requested glyph SVGs for `font` are unpacked once into training_data/font_glyphs/<font>."""
+    if font not in font_names():
+        raise ValueError(f"unknown font: {font!r}")
+    with _unpack_guard:
+        lock = _unpack_locks.setdefault(font, threading.Lock())
+    out_dir = os.path.join(GLYPHS, font)
+    spec = FONT_FILES.get(font)
+    with lock:
+        present = {n for n in os.listdir(out_dir) if n.endswith(".svg")} if os.path.isdir(out_dir) else set()
+        if not spec or not _font_binary_exists(spec) or not os.path.exists(EXPORT_SCRIPT):
+            return out_dir
+        absent = _absent_chars.setdefault((out_dir, font), set())
+        if chars is None:
+            if present:
+                return out_dir
+            py = _fontforge_python()
+            os.makedirs(out_dir, exist_ok=True)
+            subprocess.run([py, "-I", EXPORT_SCRIPT, spec, "--all", out_dir], check=True)
+            return out_dir
+        missing = sorted({c for c in chars if f"{c}.svg" not in present and c not in absent})
+        if not missing:
+            return out_dir
+        py = _fontforge_python()
+        os.makedirs(out_dir, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix=f"chars_{font}_", suffix=".txt")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(missing) + "\n")
+            subprocess.run([py, "-I", EXPORT_SCRIPT, spec, tmp_path, out_dir], check=True)
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        after = {n for n in os.listdir(out_dir) if n.endswith(".svg")}
+        for c in missing:
+            if f"{c}.svg" not in after:
+                absent.add(c)
+    return out_dir
 
 
 def safe_char(c) -> str:
@@ -202,11 +307,15 @@ class Handler(BaseHTTPRequestHandler):
                 font = q.get("font", "")
                 if font not in font_names():
                     return self.fail(404, f"unknown font: {font!r}")
+                gdir = unpack_font_chars(font)
                 have = {n[:-5] for n in os.listdir(HWDATA) if n.endswith(".json")}
-                chars = sorted(n[:-4] for n in os.listdir(os.path.join(GLYPHS, font)) if n.endswith(".svg"))
+                chars = sorted(n[:-4] for n in os.listdir(gdir) if n.endswith(".svg")) if os.path.isdir(gdir) else []
                 return self.json({"font": font, "chars": chars, "hasData": [c in have for c in chars]})
             if url.path == "/api/svg":
-                p = glyph_path(q.get("font", ""), q.get("char", ""))
+                font, char = q.get("font", ""), q.get("char", "")
+                p = glyph_path(font, char)
+                if not os.path.exists(p):
+                    unpack_font_chars(font, [safe_char(char)])
                 if not os.path.exists(p):
                     return self.fail(404, "no such glyph")
                 return self.send(200, open(p, "rb").read(), "image/svg+xml", cache=True)
@@ -227,7 +336,10 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(svg, str) or "<path" not in svg:
                 raise ValueError("svg must be SVG text with at least one <path>")
             return svg
-        p = glyph_path(req.get("font", ""), req.get("char", ""))
+        font, char = req.get("font", ""), req.get("char", "")
+        p = glyph_path(font, char)
+        if not os.path.exists(p):
+            unpack_font_chars(font, [safe_char(char)])
         if not os.path.exists(p):
             raise FileNotFoundError("no such glyph")
         return open(p, encoding="utf-8").read()
@@ -245,6 +357,43 @@ class Handler(BaseHTTPRequestHandler):
                 if not res["strokes"]:
                     return self.fail(422, "no outline found in this SVG")
                 return self.json({**res, "ms": round((time.perf_counter() - t) * 1000)})
+            if url.path == "/api/predict_batch":
+                font = req.get("font", "")
+                if font not in font_names():
+                    raise FileNotFoundError(f"unknown font: {font!r}")
+                raw_chars = req.get("chars")
+                if not isinstance(raw_chars, list) or not raw_chars:
+                    raise ValueError("chars must be a non-empty list")
+                chars = [safe_char(c) for c in raw_chars]
+                t = time.perf_counter()
+                gdir = unpack_font_chars(font, chars)
+                present = set(os.listdir(gdir)) if os.path.isdir(gdir) else set()
+                unique_chars = list(dict.fromkeys(chars))
+                paths = [os.path.join(gdir, f"{c}.svg") if f"{c}.svg" in present else None for c in unique_chars]
+                preds_by_char = dict(zip(unique_chars, self.model.predict_files_batch(paths)))
+                total_ms = round((time.perf_counter() - t) * 1000)
+                n_ok = sum(1 for r in preds_by_char.values() if r and r["strokes"])
+                avg_ms = round(total_ms / max(1, n_ok))
+                have_data = set(os.listdir(HWDATA)) if os.path.isdir(HWDATA) else set()
+                existing_by_char: dict[str, dict | None] = {}
+                for c in unique_chars:
+                    fname = f"{c}.json"
+                    if fname in have_data:
+                        with open(os.path.join(HWDATA, fname), encoding="utf-8") as fh:
+                            existing_by_char[c] = json.load(fh)
+                    else:
+                        existing_by_char[c] = None
+                results = []
+                for c in chars:
+                    if f"{c}.svg" not in present:
+                        results.append({"error": "no such glyph"})
+                    else:
+                        r = preds_by_char.get(c)
+                        if not r or not r["strokes"]:
+                            results.append({"error": "no outline found in this SVG"})
+                        else:
+                            results.append({**r, "ms": avg_ms, "existing": existing_by_char[c]})
+                return self.json({"results": results, "ms": total_ms})
             if url.path == "/api/commit":
                 char, variant = safe_char(req.get("char")), req.get("variant", "")
                 p = data_path(char, variant)

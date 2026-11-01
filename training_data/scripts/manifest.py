@@ -1,6 +1,11 @@
 import json, os, sys, unicodedata
 data_dir, out_dir = sys.argv[1:3]
-fonts = ["gkai00mp", "bkai00mp", "ukai-cn", "ukai-hk", "ukai-tw", "ukai-tw-mbe", "noto-sans"]
+fonts = [
+    "gkai00mp", "bkai00mp", "ukai-cn", "ukai-hk", "ukai-tw", "ukai-tw-mbe",
+    "noto-sans", "ubuntu", "liberation-serif", "merriweather",
+    "noto-sans-cjk-sc", "noto-sans-cjk-hk", "noto-sans-cjk-tc", "noto-sans-cjk-jp", "noto-sans-cjk-kr",
+    "noto-serif-cjk-sc", "noto-serif-cjk-hk", "noto-serif-cjk-tc", "noto-serif-cjk-jp", "noto-serif-cjk-kr",
+]
 have = {f: {n[:-4] for n in os.listdir(os.path.join(out_dir, f))} for f in fonts}
 entries = {}
 for n in sorted(os.listdir(data_dir)):

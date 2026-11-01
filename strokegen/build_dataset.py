@@ -25,8 +25,20 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GLYPHS = os.path.join(ROOT, "training_data", "font_glyphs")
 HWDATA = os.path.join(ROOT, "training_data", "hanzi-writer-data-youyin", "data")
 OUT = os.path.join(ROOT, "data", "processed")
-FONT_PRIORITY = ["gkai00mp", "bkai00mp", "ukai-cn", "ukai-hk", "ukai-tw", "ukai-tw-mbe", "noto-sans"]
+FONT_PRIORITY = [
+    "gkai00mp", "bkai00mp", "ukai-cn", "ukai-hk", "ukai-tw", "ukai-tw-mbe",
+    "noto-sans", "ubuntu", "liberation-serif", "merriweather",
+    "noto-sans-cjk-sc", "noto-sans-cjk-hk", "noto-sans-cjk-tc", "noto-sans-cjk-jp", "noto-sans-cjk-kr",
+    "noto-serif-cjk-sc", "noto-serif-cjk-hk", "noto-serif-cjk-tc", "noto-serif-cjk-jp", "noto-serif-cjk-kr",
+]
 TOL = 1.01  # hw data is integer-rounded
+SHAPE_TOL = 5.0  # max distance between an hw segment and a font segment to count as the same one
+EDGE_TOL = 2.0  # max distance of an off-vertex bridge end from the font outline
+# Quality gates. Strokes cut straight from a font outline score ~1.0 on both; hand-corrected
+# strokes that split font segments mid-edge score lower (>= 0.75 / 0.62 in the current data);
+# hw data drawn from a different glyph scores < 0.25 / 0.15.
+MIN_VERTEX_MATCH = 0.7  # share of hw vertices that are font vertices
+MIN_COVERAGE = 0.6  # share of font segments used verbatim by some hw stroke
 
 
 def _key(p) -> tuple[int, int]:
@@ -36,6 +48,17 @@ def _key(p) -> tuple[int, int]:
 def _vertex_match_frac(hw_pts: np.ndarray, font_pts: np.ndarray) -> float:
     d = np.abs(hw_pts[:, None, :] - font_pts[None, :, :]).max(-1).min(1)
     return float((d <= TOL).mean())
+
+
+def _edge_dist(pts: np.ndarray, a: np.ndarray, d: np.ndarray) -> np.ndarray:
+    """Distance from each of pts to the nearest of the line pieces a[i] -> a[i] + d[i]."""
+    t = np.clip(((pts[:, None] - a) * d).sum(-1) / np.maximum((d**2).sum(-1), 1e-12), 0.0, 1.0)
+    return np.linalg.norm(a + t[..., None] * d - pts[:, None], axis=-1).min(1)
+
+
+def _path_dist(pts: np.ndarray, poly: np.ndarray) -> float:
+    """Largest distance from any of pts to the polyline poly."""
+    return float(_edge_dist(pts, poly[:-1], np.diff(poly, axis=0)).max())
 
 
 class _VertexIndex:
@@ -58,8 +81,8 @@ class _VertexIndex:
         return out
 
 
-def decompose(contours: list[list[Seg]], hw: dict) -> dict | None:
-    """Match hw strokes to font segments. Returns label dict or None if they don't correspond."""
+def decompose(contours: list[list[Seg]], hw: dict) -> dict:
+    """Match hw strokes to font segments. Returns the labels plus match-quality counters for process()."""
     # vertex table: vertex v = start point of segment (ci, si)
     seg_ids = [(ci, si) for ci, c in enumerate(contours) for si in range(len(c))]
     vpts = np.array([contours[ci][si].p0 for ci, si in seg_ids])
@@ -78,8 +101,25 @@ def decompose(contours: list[list[Seg]], hw: dict) -> dict | None:
 
     seg_stroke = np.full(len(seg_ids), -1, np.int64)
     loops = []  # per stroke: list of ("F", n, reversed) | ("B", Seg)
-    n_bridge_bad = 0
-    n_reuse = 0
+    n_bridge_bad = 0  # bridge ends off the font outline
+    n_bridge_on_edge = 0  # bridge ends on a font edge but not at a vertex
+    # outline as line pieces (a -> b), for point-to-outline distance
+    poly = [s.flatten(0.5) for c in contours for s in c]
+    edge_a = np.concatenate([p[:-1] for p in poly])
+    edge_d = np.concatenate([p[1:] for p in poly]) - edge_a
+
+    def outline_dist(p) -> float:
+        return float(_edge_dist(np.asarray(p, float)[None], edge_a, edge_d)[0])
+
+    def same_shape(s: Seg, n: int) -> bool:
+        # endpoints already match; also require the two paths to agree so a straight hw bridge
+        # is not mistaken for a font curve between the same two vertices (and vice versa).
+        # Compared geometrically, not by parameter: hw data often writes lines as degenerate Qs.
+        ci, si = seg_ids[n]
+        f = contours[ci][si]
+        return max(_path_dist(s.sample(5)[1:-1], f.flatten(0.5)),
+                   _path_dist(f.sample(5)[1:-1], s.flatten(0.5))) <= SHAPE_TOL
+
     for k, sd in enumerate(hw["strokes"]):
         sc = parse_hw_path(sd)
         loop = []
@@ -87,23 +127,27 @@ def decompose(contours: list[list[Seg]], hw: dict) -> dict | None:
             for s in c:
                 va, vb = vindex.near(s.p0), vindex.near(s.p1)
                 hit = None
-                if s.kind != "C":
-                    for a in va:
-                        for b in vb:
-                            for n in by_pair.get((a, b), ()):
-                                if hit is None and seg_stroke[n] == -1:
-                                    hit = (n, False)
-                            for n in by_pair.get((b, a), ()):
-                                if hit is None and seg_stroke[n] == -1:
-                                    hit = (n, True)
-                if hit is not None and seg_stroke[hit[0]] == -1:
+                for a in va:
+                    for b in vb:
+                        for n in by_pair.get((a, b), ()):
+                            if hit is None and seg_stroke[n] == -1 and same_shape(s, n):
+                                hit = (n, False)
+                        for n in by_pair.get((b, a), ()):
+                            if hit is None and seg_stroke[n] == -1 and same_shape(s, n):
+                                hit = (n, True)
+                if hit is not None:
                     seg_stroke[hit[0]] = k
                     loop.append(("F", hit[0], hit[1]))
                 else:
-                    if hit is not None:
-                        n_reuse += 1
-                    if not va or not vb:
-                        n_bridge_bad += 1
+                    # a bridge end off every font vertex is fine if it sits on a font edge (a
+                    # hand-made cut partway along a segment); off the outline means the GT
+                    # was not cut from this glyph
+                    for p, v in ((s.p0, va), (s.p1, vb)):
+                        if not v:
+                            if outline_dist(p) <= EDGE_TOL:
+                                n_bridge_on_edge += 1
+                            else:
+                                n_bridge_bad += 1
                     # snap bridge ends to exact font vertices
                     pts = s.pts.copy()
                     if va:
@@ -122,12 +166,13 @@ def decompose(contours: list[list[Seg]], hw: dict) -> dict | None:
         nxt = seg_stroke[flat[(ci, (si + 1) % L)]]
         if prv >= 0 and prv == nxt:
             seg_stroke[n] = prv
+    # anything still -1 stays unknown: features.targets masks it out of the cut loss
     return dict(
         seg_stroke=seg_stroke,
         loops=loops,
         coverage=float(covered),
         n_bridge_bad=n_bridge_bad,
-        n_reuse=n_reuse,
+        n_bridge_on_edge=n_bridge_on_edge,
     )
 
 
@@ -140,7 +185,7 @@ def outline_hash(contours) -> str:
     return h.hexdigest()
 
 
-def process(item, min_coverage: float = 0.97):
+def process(item, min_coverage: float = MIN_COVERAGE, min_vertex_match: float = MIN_VERTEX_MATCH):
     char, entry = item
     path = os.path.join(HWDATA, f"{char}.json")
     if f"{char}.json" not in entry["data_files"] or not os.path.exists(path):
@@ -152,10 +197,15 @@ def process(item, min_coverage: float = 0.97):
     for sd in hw["strokes"]:
         for c in parse_hw_path(sd):
             hw_pts += [s.p0 for s in c]
+    if not hw_pts:
+        return char, None, "empty_hw"
     hw_pts = np.array(hw_pts)
     best = None
     for f in sorted(entry["fonts"], key=FONT_PRIORITY.index):
-        svg = open(os.path.join(GLYPHS, f, f"{char}.svg"), encoding="utf-8").read()
+        svg_path = os.path.join(GLYPHS, f, f"{char}.svg")
+        if not os.path.exists(svg_path):
+            continue
+        svg = open(svg_path, encoding="utf-8").read()
         contours = load_svg_glyph(svg)
         if not contours:
             continue
@@ -165,14 +215,16 @@ def process(item, min_coverage: float = 0.97):
             best = (frac, f, contours)
         if frac >= 0.999:
             break
-    if best is None or best[0] < 0.99:
+    if best is None:
+        return char, None, "no_font_svg"
+    frac, font, contours = best
+    if frac < min_vertex_match:
         return char, None, "no_exact_font"
-    _, font, contours = best
     lab = decompose(contours, hw)
     if lab["coverage"] < min_coverage:
         return char, None, "low_coverage"
     if lab["n_bridge_bad"] > 0:
-        return char, None, "bridge_off_vertex"
+        return char, None, "bridge_off_outline"
     rec = dict(
         char=char,
         font=font,
@@ -180,6 +232,9 @@ def process(item, min_coverage: float = 0.97):
         seg_stroke=lab["seg_stroke"],
         loops=lab["loops"],
         coverage=lab["coverage"],
+        vertex_match=frac,
+        # GT is an exact partition of the outline segments (no mid-edge cuts, nothing unassigned)
+        exact=bool(frac >= 0.99 and lab["coverage"] >= 0.97 and lab["n_bridge_on_edge"] == 0),
         medians=[np.array(m, float) for m in hw["medians"]],
         strokes_gt=hw["strokes"],
         hash=outline_hash(contours),
@@ -201,24 +256,25 @@ def main():
         results = pool.map(process, items, chunksize=32)
     status = Counter(s for _, _, s in results)
     print("status:", dict(status))
-    recs, seen, dup = [], set(), 0
-    for _, r, s in sorted(results, key=lambda t: t[0]):
-        if r is None:
-            continue
-        if r["hash"] in seen:
-            dup += 1
-            continue
-        seen.add(r["hash"])
-        recs.append(r)
-    print(f"kept {len(recs)} records ({dup} duplicate outlines dropped)")
+    recs = [r for _, r, _ in sorted(results, key=lambda t: t[0]) if r is not None]
+    print(f"kept {len(recs)} records")
     print("fonts:", dict(Counter(r["font"] for r in recs)))
     full = sum(1 for r in recs if (r["seg_stroke"] >= 0).all())
     print(f"fully covered: {full}/{len(recs)}")
-    rng = random.Random(0)
-    rng.shuffle(recs)
+    # characters with identical outlines (e.g. Latin P / Greek Rho) are all kept, but go to the
+    # same split so a test glyph is never also a training glyph
+    groups: dict[str, list[dict]] = {}
+    for r in recs:
+        groups.setdefault(r["hash"], []).append(r)
+    print(f"{len(groups)} distinct outlines ({len(recs) - len(groups)} records share an outline)")
+    order = list(groups.values())
+    random.Random(0).shuffle(order)
     n = len(recs)
     n_val = n_test = max(1, n // 20)
-    splits = {"test": recs[:n_test], "val": recs[n_test:n_test + n_val], "train": recs[n_test + n_val:]}
+    splits = {"test": [], "val": [], "train": []}
+    for g in order:
+        name = "test" if len(splits["test"]) < n_test else "val" if len(splits["val"]) < n_val else "train"
+        splits[name] += g
     os.makedirs(OUT, exist_ok=True)
     for name, rs in splits.items():
         with open(os.path.join(OUT, f"{name}.pkl"), "wb") as f:

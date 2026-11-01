@@ -314,6 +314,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;",
 const cp = c => "U+" + c.codePointAt(0).toString(16).toUpperCase().padStart(4, "0");
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const PAGE = 300;
+const BULK_MIN = 100;
 const VARIANTS = [["", "plain (training)"], ["-jp", "-jp variant"], ["-ko", "-ko variant"]];
 
 const S = {
@@ -429,9 +430,12 @@ $("#queue-new").onclick = () => {
     renderGrid(); renderQueue(); runQueue();
   };
   if (chars.length <= 50) return go();
+  const mode = chars.length > BULK_MIN
+    ? "unpacks the font once and processes all glyphs in bulk in parallel"
+    : "runs through the model one after another";
   $("#modal-root").innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true">
     <h2>Process ${chars.length.toLocaleString()} glyphs?</h2>
-    <div>Every glyph in <b>${esc(font)}</b> without a training data file goes into the queue and runs through the model one after another. Nothing is saved until you save it.</div>
+    <div>Every glyph in <b>${esc(font)}</b> without a training data file goes into the queue and ${mode}. Nothing is saved until you save it.</div>
     <div class="row"><button class="btn ghost" id="m-cancel">Cancel</button><button class="btn primary" id="m-ok">Process ${chars.length.toLocaleString()}</button></div>
   </div></div>`;
   const close = () => { $("#modal-root").innerHTML = ""; };
@@ -574,7 +578,8 @@ function renderQueue() {
   const q = S.queue;
   $("#q-empty").hidden = q.length > 0;
   const done = q.filter(i => i.status === "done" || i.status === "error").length;
-  $("#q-count").textContent = q.length ? `${done}/${q.length}` : "";
+  const running = q.filter(i => i.status === "running").length;
+  $("#q-count").textContent = q.length ? `${done}/${q.length}${running > 1 ? ` · ${running.toLocaleString()} in bulk…` : ""}` : "";
   $("#q-prog").style.width = q.length ? `${100 * done / q.length}%` : "0";
   $("#queue").innerHTML = q.map(it => {
     const [cls, label] = itemChip(it);
@@ -595,22 +600,47 @@ $("#q-clear").onclick = () => {
   renderQueue(); if (S.tab === "fonts") renderGrid();
 };
 
+function applyPrediction(it, r) {
+  it.pred = {strokes: r.strokes, medians: r.medians}; it.ms = r.ms;
+  it.order = r.strokes.map((_, i) => i); it.flip = r.strokes.map(() => false);
+  it.segStroke = r.segStroke; it.base = r.strokes.length; it.parts = {}; it.deleted = [];
+  if ("existing" in r) it.existing[""] = r.existing;
+  it.status = "done";
+}
+
 async function runQueue() {
   if (S.busy) return;
   S.busy = true;
   let it;
   while ((it = S.queue.find(i => i.status === "pending"))) {
+    const batch = it.font ? S.queue.filter(i => i.status === "pending" && i.font === it.font) : [];
+    if (batch.length > BULK_MIN) {
+      for (const b of batch) b.status = "running";
+      renderQueue();
+      if (batch.some(b => b.id === S.cur)) renderInspector();
+      try {
+        const res = await api("/api/predict_batch", {font: it.font, chars: batch.map(b => b.char)});
+        for (let k = 0; k < batch.length; k++) {
+          const b = batch[k], r = res.results && res.results[k];
+          if (r && !r.error) applyPrediction(b, r);
+          else { b.status = "error"; b.error = (r && r.error) || "prediction failed"; }
+        }
+      } catch (e) {
+        for (const b of batch) { b.status = "error"; b.error = e.message; }
+      }
+      const pick = S.cur == null ? (batch.find(b => b.status === "done") || batch[0]).id
+        : batch.some(b => b.id === S.cur) ? S.cur : null;
+      if (pick != null) select(pick); else renderQueue();
+      continue;
+    }
     it.status = "running"; renderQueue();
+    if (S.cur === it.id) renderInspector();
     try {
       const r = await api("/api/predict", it.svg ? {svg: it.svg} : {font: it.font, char: it.char});
-      it.pred = {strokes: r.strokes, medians: r.medians}; it.ms = r.ms;
-      it.order = r.strokes.map((_, i) => i); it.flip = r.strokes.map(() => false);
-      it.segStroke = r.segStroke; it.base = r.strokes.length; it.parts = {}; it.deleted = [];
-      it.status = "done";
+      applyPrediction(it, r);
       await loadExisting(it);
     } catch (e) { it.status = "error"; it.error = e.message; }
-    renderQueue();
-    if (S.cur == null || S.cur === it.id) select(it.id);
+    if (S.cur == null || S.cur === it.id) select(it.id); else renderQueue();
   }
   S.busy = false;
 }
