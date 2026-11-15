@@ -22,21 +22,53 @@ SPUR_FRAC = 0.3  # trim path ends whose clearance < SPUR_FRAC * median clearance
 TIP_FRAC = 0.0  # extension toward the tip (fraction of gap); GT medians stop at the skeleton end
 
 
-def stroke_polygon(loops: list[list[Seg]]):
-    geoms = []
-    for loop in loops:
-        pts = contour_polygon(loop, 2.0)
-        if len(pts) >= 3:
-            geoms.append(make_valid(Polygon(pts)))
-    if not geoms:
+def _winding(x: float, y: float, rings: list[np.ndarray]) -> int:
+    """Winding number of the point (x, y) with respect to closed polylines."""
+    w = 0
+    for a in rings:
+        b = np.roll(a, -1, 0)
+        cross = (b[:, 0] - a[:, 0]) * (y - a[:, 1]) - (x - a[:, 0]) * (b[:, 1] - a[:, 1])
+        w += int(((a[:, 1] <= y) & (b[:, 1] > y) & (cross > 0)).sum())
+        w -= int(((a[:, 1] > y) & (b[:, 1] <= y) & (cross < 0)).sum())
+    return w
+
+
+def stroke_geometry(loops: list[list[Seg]], tol: float = 2.0):
+    """The area a stroke covers, its loops filled together with nonzero winding.
+
+    That is how hanzi-writer and raster.render fill a stroke, so a loop wound against the
+    outer one (the counter of 口-like or O-like strokes) stays a hole. Returns a shapely
+    geometry (possibly a MultiPolygon), or None for a stroke without area.
+    """
+    rings = [p for p in (contour_polygon(loop, tol) for loop in loops if loop) if len(p) >= 3]
+    if not rings:
         return None
-    g = shapely.union_all(geoms)
-    if g.geom_type == "MultiPolygon" or g.geom_type == "GeometryCollection":
-        polys = [p for p in getattr(g, "geoms", []) if p.geom_type == "Polygon"]
-        if not polys:
+    if len(rings) == 1:
+        g = make_valid(Polygon(rings[0]))
+    else:
+        # node all loops against each other, then keep the faces with nonzero winding
+        lines = shapely.union_all([shapely.LinearRing(r) for r in rings])
+        faces = shapely.get_parts(shapely.polygonize(shapely.get_parts(lines)))
+        keep = [f for f in faces if f.area > 1e-9 and _winding(*f.representative_point().coords[0], rings) != 0]
+        if not keep:
             return None
-        g = max(polys, key=lambda p: p.area)
-    return g if g.geom_type == "Polygon" and g.area > 1 else None
+        g = shapely.union_all(keep)
+    return g if not g.is_empty else None
+
+
+def polygon_parts(g) -> list[Polygon]:
+    if g is None:
+        return []
+    return [p for p in shapely.get_parts(g) if p.geom_type == "Polygon" and not p.is_empty]
+
+
+def stroke_polygon(loops: list[list[Seg]]):
+    """Largest polygon of stroke_geometry (with its counters as interiors), or None."""
+    polys = polygon_parts(stroke_geometry(loops))
+    if not polys:
+        return None
+    g = max(polys, key=lambda p: p.area)
+    return g if g.area > 1 else None
 
 
 def _boundary_samples(poly: Polygon, step: float) -> np.ndarray:
@@ -47,21 +79,36 @@ def _boundary_samples(poly: Polygon, step: float) -> np.ndarray:
     return np.concatenate(pts)
 
 
-def skeleton_path(poly: Polygon, step: float = SAMPLE_STEP) -> np.ndarray | None:
+def skeleton_graph(poly: Polygon, step: float = SAMPLE_STEP):
+    """Voronoi skeleton of a polygon (counters respected).
+
+    Returns (V, G, used): vertex coordinates, symmetric CSR graph weighted by edge length, and
+    the indices of vertices that lie on a skeleton edge; or None when there is no skeleton.
+    """
     pts = _boundary_samples(poly, step)
     if len(pts) < 4:
         return None
     vor = Voronoi(pts + np.random.default_rng(0).normal(0, 1e-3, pts.shape))
     V = vor.vertices
     inside = shapely.contains_xy(poly, V[:, 0], V[:, 1])
-    E = np.array([rv for rv in vor.ridge_vertices if rv[0] >= 0 and rv[1] >= 0 and inside[rv[0]] and inside[rv[1]]])
+    rv = np.asarray(vor.ridge_vertices)
+    ok = (rv >= 0).all(1)
+    rv = rv[ok]
+    E = rv[inside[rv[:, 0]] & inside[rv[:, 1]]]
     if len(E) == 0:
         return None
     w = np.linalg.norm(V[E[:, 0]] - V[E[:, 1]], axis=1) + 1e-6
     n = len(V)
     G = coo_matrix((np.r_[w, w], (np.r_[E[:, 0], E[:, 1]], np.r_[E[:, 1], E[:, 0]])), shape=(n, n)).tocsr()
+    return V, G, np.unique(E)
+
+
+def skeleton_path(poly: Polygon, step: float = SAMPLE_STEP) -> np.ndarray | None:
+    sk = skeleton_graph(poly, step)
+    if sk is None:
+        return None
+    V, G, used = sk
     _, comp = connected_components(G, directed=False)
-    used = np.unique(E)
     big = np.bincount(comp[used]).argmax()
     nodes = used[comp[used] == big]
     # tree diameter by double sweep
@@ -125,9 +172,14 @@ def rdp(pts: np.ndarray, eps: float) -> np.ndarray:
     return np.vstack([a, b])
 
 
-def stroke_median(loops: list[list[Seg]], eps: float = RDP_EPS, tip_frac: float = TIP_FRAC) -> np.ndarray:
-    """Unoriented median polyline (k, 2) in hw coords, rounded to integers."""
-    poly = stroke_polygon(loops)
+def stroke_median(loops: list[list[Seg]], eps: float = RDP_EPS, tip_frac: float = TIP_FRAC,
+                  poly: Polygon | None = None) -> np.ndarray:
+    """Unoriented median polyline (k, 2) in hw coords, rounded to integers.
+
+    poly: stroke_polygon(loops), when the caller already has it.
+    """
+    if poly is None:
+        poly = stroke_polygon(loops)
     if poly is None:
         pts = np.concatenate([s.pts for loop in loops for s in loop])
         c = pts.mean(0)

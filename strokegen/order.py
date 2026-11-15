@@ -4,9 +4,14 @@ from __future__ import annotations
 import numpy as np
 
 from .medians import resample, stroke_median, stroke_polygon
+from .svg_io import NORM_CX, NORM_CY, NORM_SC
+
+# Bumped whenever stroke_record / stroke_features / pair_features change meaning.
+# 1: original. 2: stroke shapes keep their counters (nonzero winding) for area, bbox and median.
+FEATURE_VERSION = 2
 
 N_MED = 16
-CX, CY, SC = 512.0, 388.0, 512.0
+CX, CY, SC = NORM_CX, NORM_CY, NORM_SC
 
 
 def canonical(median: np.ndarray) -> np.ndarray:
@@ -17,8 +22,8 @@ def canonical(median: np.ndarray) -> np.ndarray:
 
 def stroke_record(loops) -> dict:
     """Geometry the order model needs for one stroke."""
-    med = canonical(stroke_median(loops))
     poly = stroke_polygon(loops)
+    med = canonical(stroke_median(loops, poly=poly))
     area = poly.area if poly is not None else 1.0
     if poly is not None:
         x0, y0, x1, y1 = poly.bounds
@@ -44,7 +49,8 @@ def stroke_features(strokes: list[dict]) -> np.ndarray:
         x0, y0, x1, y1 = st["bbox"]
         bb = np.array([(x0 - CX) / SC, (y0 - CY) / SC, (x1 - CX) / SC, (y1 - CY) / SC, (x1 - x0) / SC, (y1 - y0) / SC])
         width = st["area"] / L
-        out.append(np.concatenate([rn.reshape(-1), d0, d1, bb, [L / 1024.0, width / 100.0, np.log1p(st["area"]) / 12.0, len(m) / 10.0]]))
+        scalars = [L / 1024.0, width / 100.0, np.log1p(st["area"]) / 12.0, len(m) / 10.0]
+        out.append(np.concatenate([rn.reshape(-1), d0, d1, bb, scalars]))
     return np.array(out, np.float32)
 
 
@@ -122,30 +128,33 @@ def _seg_cross(p, q) -> bool:
 
 
 def pair_features(strokes: list[dict]) -> np.ndarray:
-    """(S, S, N_PFEAT) relational features between strokes."""
+    """(S, S, N_PFEAT) relational features between strokes (zero on the diagonal)."""
     S = len(strokes)
-    meds = [resample(st["median"].astype(float), 12) for st in strokes]
-    cen = np.array([m.mean(0) for m in meds])
-    st_ = np.array([m[0] for m in meds])
-    en_ = np.array([m[-1] for m in meds])
-    bb = np.array([st["bbox"] for st in strokes])
-    out = np.zeros((S, S, N_PFEAT), np.float32)
+    if S == 0:
+        return np.zeros((0, 0, N_PFEAT), np.float32)
+    meds = np.stack([resample(st["median"].astype(float), 12) for st in strokes])  # (S, 12, 2)
+    cen, st_, en_ = meds.mean(1), meds[:, 0], meds[:, -1]
+    bb = np.array([st["bbox"] for st in strokes], float)
+    x0, y0, x1, y1 = bb.T
+    ox = np.maximum(0.0, np.minimum(x1[:, None], x1[None]) - np.maximum(x0[:, None], x0[None]))
+    oy = np.maximum(0.0, np.minimum(y1[:, None], y1[None]) - np.maximum(y0[:, None], y0[None]))
+    w, h = x1 - x0 + 1, y1 - y0 + 1
+    area = w * h
+    dmin = np.linalg.norm(meds[:, None, :, None] - meds[None, :, None, :], axis=-1).min((2, 3))
+    cross = np.zeros((S, S))
     for i in range(S):
-        for j in range(S):
-            if i == j:
-                continue
-            ox = max(0.0, min(bb[i, 2], bb[j, 2]) - max(bb[i, 0], bb[j, 0]))
-            oy = max(0.0, min(bb[i, 3], bb[j, 3]) - max(bb[i, 1], bb[j, 1]))
-            wi, hi = bb[i, 2] - bb[i, 0] + 1, bb[i, 3] - bb[i, 1] + 1
-            wj, hj = bb[j, 2] - bb[j, 0] + 1, bb[j, 3] - bb[j, 1] + 1
-            dmin = np.linalg.norm(meds[i][:, None] - meds[j][None], axis=-1).min()
-            out[i, j] = np.concatenate([
-                (cen[i] - cen[j]) / SC,
-                (st_[i] - st_[j]) / SC, (en_[i] - en_[j]) / SC,
-                (st_[i] - en_[j]) / SC, (en_[i] - st_[j]) / SC,
-                [dmin / 256.0, ox / min(wi, wj), oy / min(hi, hj), ox * oy / (wi * hi + wj * hj - ox * oy),
-                 float(_seg_cross(strokes[i]["median"], strokes[j]["median"]))],
-            ])
+        for j in range(i + 1, S):
+            cross[i, j] = cross[j, i] = _seg_cross(strokes[i]["median"], strokes[j]["median"])
+
+    def diff(a, b):
+        return (a[:, None] - b[None]) / SC
+
+    out = np.concatenate([
+        diff(cen, cen), diff(st_, st_), diff(en_, en_), diff(st_, en_), diff(en_, st_),
+        np.stack([dmin / 256.0, ox / np.minimum(w[:, None], w[None]), oy / np.minimum(h[:, None], h[None]),
+                  ox * oy / (area[:, None] + area[None] - ox * oy), cross], -1),
+    ], -1).astype(np.float32)
+    out[np.arange(S), np.arange(S)] = 0.0
     return out
 
 

@@ -101,8 +101,9 @@ def split_b(contours, min_holes=2):
             yb = max(s.pts[:, 1].max() for s in contours[hb])
             ym = (ya + yb) / 2
             r_mid = op.intersection(LineString([(x0 - 10, ym), (x0 + 5000, ym)])).bounds[2]
-            r_a = op.intersection(LineString([(x0 - 10, polys[ha].centroid.y), (x0 + 5000, polys[ha].centroid.y)])).bounds[2]
-            r_b = op.intersection(LineString([(x0 - 10, polys[hb].centroid.y), (x0 + 5000, polys[hb].centroid.y)])).bounds[2]
+            ya, yb = polys[ha].centroid.y, polys[hb].centroid.y
+            r_a = op.intersection(LineString([(x0 - 10, ya), (x0 + 5000, ya)])).bounds[2]
+            r_b = op.intersection(LineString([(x0 - 10, yb), (x0 + 5000, yb)])).bounds[2]
             if r_mid > min(r_a, r_b) - 15:
                 waist_ok = False
         if not waist_ok:
@@ -119,7 +120,8 @@ def split_b(contours, min_holes=2):
         rest_loops = [rest] + [contours[h] for h in holes]
         inset = (x1 - x0) / 2
         top, bot = max(y_prev, y_next), min(y_prev, y_next)
-        stem_med = [[int(round(x0 + inset)), int(round(top - inset))], [int(round(x0 + inset)), int(round(bot + inset))]]
+        xm = int(round(x0 + inset))
+        stem_med = [[xm, int(round(top - inset))], [xm, int(round(bot + inset))]]
         med = bowl_median(rest_loops, [polys[h] for h in holes], x1, inset * 0.6)
         if med is None:
             continue

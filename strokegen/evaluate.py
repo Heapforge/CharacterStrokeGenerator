@@ -10,45 +10,41 @@ import json
 import os
 
 import numpy as np
-from scipy.optimize import linear_sum_assignment
 
-from .data import ROOT, load_split
+from .data import load_split
 from .decode import assemble_strokes, fill_unassigned, match_strokes
 from .medians import median_distance
+from .paths import OUTPUTS
 from .predict import StrokeGenerator
-from .raster import iou, render
+from .raster import iou, render, render_union
 
 
-def _match(pred: np.ndarray, gt: np.ndarray, w: np.ndarray) -> dict[int, int]:
-    """pred stroke id -> gt stroke id (Hungarian on weighted segment IoU)."""
-    v = gt >= 0
-    P, G = int(pred.max()) + 1, int(gt.max()) + 1
-    inter = np.zeros((P, G))
-    np.add.at(inter, (pred[v], gt[v]), w[v])
-    ps, gs = inter.sum(1), inter.sum(0)
-    io = inter / (ps[:, None] + gs[None, :] - inter + 1e-9)
-    r, c = linear_sum_assignment(-io)
-    return {int(a): int(b) for a, b in zip(r, c) if io[a, b] > 0.3}
-
-
-def evaluate(gen: StrokeGenerator, recs: list[dict]) -> tuple[dict, list[dict]]:
+def evaluate(gen: StrokeGenerator, recs: list[dict], workers: int | None = None) -> tuple[dict, list[dict]]:
     agg = dict(glyphs=0, strokes=0, stroke_exact=0, glyph_part=0, union_iou=[], med_dist=[], dir_ok=0, dir_n=0,
-               order_exact_e2e=0, full=0, gtp_order=0, gtp_dir_ok=0, gtp_dir_n=0)
+               order_exact_e2e=0, full=0, gtp_order=0, gtp_dir_ok=0, gtp_dir_n=0, failed=0)
     rows = []
-    for r in recs:
+    contours = [r["contours"] for r in recs]
+    gt_labels = [fill_unassigned(r["contours"], r["seg_stroke"]) for r in recs]
+    preds = gen.predict_contours_batch(contours, workers=workers)
+    # Stage C alone, on the GT partition
+    preds_gtp = gen.predict_contours_batch(contours, workers=workers, labels=gt_labels)
+    for r, res, lab, rg in zip(recs, preds, gt_labels, preds_gtp):
         C = r["contours"]
         w = np.array([s.length() for c in C for s in c])
         gt = r["seg_stroke"]
-        res = gen.predict_contours(C)
-        part = res["_partition"]
-        m = match_strokes(part, gt, w)
         agg["glyphs"] += 1
+        if "_error" in res:
+            print(f"{r['char']}: prediction failed: {res['_error']}")
+            agg["failed"] += 1
+        part = res["_partition"] if len(res["_partition"]) else np.full(len(gt), -1)
+        m = match_strokes(part, gt, w)
         agg["strokes"] += m["n_gt"]
         agg["stroke_exact"] += m["exact"]
         agg["glyph_part"] += m["glyph_exact"]
-        loops = [s for s in assemble_strokes(C, part) if s]
-        agg["union_iou"].append(iou(_union(loops), render(C, 256)))
-        mp = _match(part, gt, w)
+        loops = assemble_strokes(C, part) if (part >= 0).any() else []
+        agg["union_iou"].append(iou(render_union(loops), render(C, 256)))
+        # predicted strokes are labelled 0..K-1 and all non-empty, so _order indexes partition labels
+        mp = m["assignment"]
         ranks, dirs_ok = [], []
         for pos, k in enumerate(res["_order"]):
             g = mp.get(int(k))
@@ -59,7 +55,7 @@ def evaluate(gen: StrokeGenerator, recs: list[dict]) -> tuple[dict, list[dict]]:
             ours = np.array(res["medians"][pos], float)
             gm = r["medians"][g]
             d_f, d_r = median_distance(ours, gm), median_distance(ours[::-1], gm)
-            agg["med_dist"].append(d_f)
+            agg["med_dist"].append(min(d_f, d_r))  # Stage B quality only: direction is scored below
             dirs_ok.append(d_f <= d_r)
         agg["dir_ok"] += sum(dirs_ok)
         agg["dir_n"] += len(dirs_ok)
@@ -67,9 +63,6 @@ def evaluate(gen: StrokeGenerator, recs: list[dict]) -> tuple[dict, list[dict]]:
         agg["order_exact_e2e"] += order_ok
         full = bool(order_ok and all(dirs_ok))
         agg["full"] += full
-        # Stage C alone, on the GT partition
-        lab = fill_unassigned(C, gt)
-        rg = gen.predict_contours(C, labels=lab)
         gt_ids = [k for k in range(int(lab.max()) + 1) if (lab == k).any()]
         gt_ranks = [gt_ids[k] for k in rg["_order"]]
         agg["gtp_order"] += gt_ranks == sorted(gt_ranks)
@@ -83,14 +76,15 @@ def evaluate(gen: StrokeGenerator, recs: list[dict]) -> tuple[dict, list[dict]]:
                          partition_ok=bool(m["glyph_exact"]), order_ok=bool(order_ok), full=full,
                          strokes_exact=m["exact"], n_gt=m["n_gt"], n_pred=m["n_pred"], miou=m["miou"]))
     G = max(1, agg["glyphs"])
-    ui = np.array(agg["union_iou"])
+    ui = np.array(agg["union_iou"] or [1.0])
     summary = {
         "glyphs": agg["glyphs"],
+        "failed": agg["failed"],
         "A_stroke_exact": agg["stroke_exact"] / max(1, agg["strokes"]),
         "A_glyph_partition_exact": agg["glyph_part"] / G,
         "A_union_iou_mean": float(ui.mean()),
         "A_union_iou_min": float(ui.min()),
-        "B_median_dist_mean": float(np.mean(agg["med_dist"])),
+        "B_median_dist_mean": float(np.mean(agg["med_dist"])) if agg["med_dist"] else float("nan"),
         "C_dir_acc_e2e": agg["dir_ok"] / max(1, agg["dir_n"]),
         "C_order_exact_e2e": agg["order_exact_e2e"] / G,
         "C_order_exact_gt_partition": agg["gtp_order"] / G,
@@ -98,14 +92,6 @@ def evaluate(gen: StrokeGenerator, recs: list[dict]) -> tuple[dict, list[dict]]:
         "full_glyph_correct": agg["full"] / G,
     }
     return summary, rows
-
-
-def _union(loops_per_stroke):
-    out = None
-    for loops in loops_per_stroke:
-        m = render(loops, 256)
-        out = m if out is None else np.maximum(out, m)
-    return out
 
 
 PALETTE = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6", "#9a6324", "#469990",
@@ -268,7 +254,8 @@ def records_for_chars(chars: str) -> list[dict]:
     """Labelled records for specific characters, built straight from the font glyphs + hw data."""
     from .build_dataset import GLYPHS, process
 
-    man = json.load(open(os.path.join(GLYPHS, "manifest.json"), encoding="utf-8"))["characters"]
+    with open(os.path.join(GLYPHS, "manifest.json"), encoding="utf-8") as f:
+        man = json.load(f)["characters"]
     in_split = {}
     for name in ("train", "val", "test"):
         for r in load_split(name):
@@ -298,6 +285,8 @@ def main():
     ap.add_argument("--chars", help="evaluate only these characters, e.g. --chars 永林森")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--preview", type=int, default=60, help="glyphs in the HTML preview (failures first)")
+    ap.add_argument("--device")
+    ap.add_argument("--workers", type=int, help="CPU worker processes")
     args = ap.parse_args()
     if args.chars:
         recs = records_for_chars(args.chars)
@@ -309,8 +298,11 @@ def main():
         tag = args.split
     if args.limit:
         recs = recs[: args.limit]
-    gen = StrokeGenerator()
-    summary, rows = evaluate(gen, recs)
+    gen = StrokeGenerator(device=args.device)
+    try:
+        summary, rows = evaluate(gen, recs, args.workers)
+    finally:
+        gen.close()
     print(json.dumps(summary, indent=1))
     if args.chars:
         for r in rows:
@@ -320,9 +312,10 @@ def main():
                   f"order {'ok' if r['order_ok'] else 'WRONG'}, fully correct: {r['full']}")
             if not r["partition_ok"]:
                 print("   (order is only scored as ok when the cut is exactly right)")
-    out = os.path.join(ROOT, "outputs")
+    out = OUTPUTS
     os.makedirs(out, exist_ok=True)
-    json.dump(summary, open(os.path.join(out, f"eval_{tag}.json"), "w"), indent=1)
+    with open(os.path.join(out, f"eval_{tag}.json"), "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=1)
     bad = [r for r in rows if not r["full"]]
     good = [r for r in rows if r["full"]]
     pick = bad[: args.preview // 2] + good[: args.preview - min(len(bad), args.preview // 2)]

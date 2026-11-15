@@ -32,7 +32,7 @@ from shapely.validation import make_valid
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from strokegen.decode import assemble_strokes  # noqa: E402
-from strokegen.medians import RDP_EPS, TIP_FRAC, _extend, rdp, skeleton_path, stroke_median, trim_spurs  # noqa: E402
+from strokegen.medians import stroke_median  # noqa: E402
 from strokegen.raster import iou, render  # noqa: E402
 from strokegen.svg_io import Seg, contour_polygon, load_svg_glyph, parse_hw_path, segs_to_path  # noqa: E402
 
@@ -117,27 +117,17 @@ def _ring_median(loops) -> list[list[int]] | None:
 def _coords(g):
     if g.geom_type == "Point":
         return [g.coords[0]]
-    return [p for part in getattr(g, "geoms", [g]) for p in (part.coords if part.geom_type != "Point" else [part.coords[0]])]
+    parts = getattr(g, "geoms", [g])
+    return [p for part in parts for p in (part.coords if part.geom_type != "Point" else [part.coords[0]])]
 
 
 def holey_median(loops) -> np.ndarray:
-    """stroke_median, but on the stroke shape with its counters cut out.
+    """stroke_median; kept for the tools that import it.
 
-    stroke_median unions a stroke's loops into one solid shape, so for a stroke that owns a
-    counter its median would cross the hole. Loops are combined even-odd here instead.
+    stroke_median keeps a stroke's counters open (nonzero winding), so the median of a stroke
+    that owns a counter goes round the hole instead of across it.
     """
-    g = None
-    for p in sorted((p for p in (poly(l) for l in loops) if p is not None), key=lambda p: -p.area):
-        g = p if g is None else g.symmetric_difference(p)
-    if g is not None and g.geom_type != "Polygon":
-        parts = [q for q in getattr(g, "geoms", []) if q.geom_type == "Polygon"]
-        g = max(parts, key=lambda q: q.area) if parts else None
-    if g is None or not g.interiors:
-        return stroke_median(loops)
-    path = skeleton_path(g)
-    if path is None or len(path) < 2:
-        return stroke_median(loops)
-    return np.round(rdp(_extend(trim_spurs(path, g), g, TIP_FRAC), RDP_EPS))
+    return stroke_median(loops)
 
 
 def oriented(med: np.ndarray, old: list) -> list[list[int]]:
@@ -345,11 +335,13 @@ def main():
             with open(os.path.join(a.out_dir, f"{it['char']}.json"), "w", encoding="utf-8") as f:
                 json.dump(r.pop("data"), f, ensure_ascii=False)
         report.append(r)
-    json.dump(report, open(os.path.join(a.out_dir, "_report.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=0)
+    with open(os.path.join(a.out_dir, "_report.json"), "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=0)
     ok = [r for r in report if "before" in r]
     print(f"{len(report)} chars, {sum(r.get('changed', False) for r in report)} changed, "
           f"{sum(1 for r in report if 'error' in r)} errors")
-    print(f"below {GOOD_IOU}: before {sum(r['before'] < GOOD_IOU for r in ok)}, after {sum(r['after'] < GOOD_IOU for r in ok)}")
+    n_before, n_after = sum(r["before"] < GOOD_IOU for r in ok), sum(r["after"] < GOOD_IOU for r in ok)
+    print(f"below {GOOD_IOU}: before {n_before}, after {n_after}")
 
 
 if __name__ == "__main__":

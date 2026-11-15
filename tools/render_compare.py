@@ -77,7 +77,8 @@ def main():
     c.set_source_rgb(0, 0, 0)
     c.set_font_size(16)
     c.move_to(8, 18)
-    c.show_text(f"{a.char}  strokes={len(strokes)}  union IoU={score:.4f}   [font | strokes+medians | red=extra blue=missing]")
+    c.show_text(f"{a.char}  strokes={len(strokes)}  union IoU={score:.4f}   "
+                "[font | strokes+medians | red=extra blue=missing]")
 
     # font + em box
     ctx = _ctx(surf, 0)
@@ -95,7 +96,7 @@ def main():
     # strokes + medians
     ctx = _ctx(surf, PANEL + 20)
     n = max(1, len(strokes))
-    for i, (st, med) in enumerate(zip(strokes, d["medians"])):
+    for i, (st, _med) in enumerate(zip(strokes, d["medians"])):
         r, g, b = colorsys.hsv_to_rgb(i / n, 0.65, 0.95)
         for loop in st:
             _trace(ctx, loop)

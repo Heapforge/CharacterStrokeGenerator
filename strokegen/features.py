@@ -4,11 +4,15 @@ from __future__ import annotations
 import numpy as np
 
 from .raster import render
-from .svg_io import Seg, contour_polygon, signed_area
+from .svg_io import HW_BASE, HW_EM, NORM_CX, NORM_CY, NORM_SC, contour_polygon, signed_area
+
+# Bumped whenever glyph_features changes meaning; checkpoints record the version they were trained on.
+# 1: original. 2: real inward normal (was the raw left normal), Fourier features on segment ends too.
+FEATURE_VERSION = 2
 
 IMG = 256
 MASK_RES = 512
-CX, CY, SC = 512.0, 388.0, 512.0  # hw -> normalized coords
+CX, CY, SC = NORM_CX, NORM_CY, NORM_SC  # hw -> normalized coords
 N_BUCKETS = 11
 KINDS = {"L": 0, "Q": 1, "C": 2}
 
@@ -19,7 +23,8 @@ def norm_xy(p: np.ndarray) -> np.ndarray:
 
 def img_xy(p: np.ndarray) -> np.ndarray:
     """hw -> grid_sample coords in [-1, 1] (x right, y down)."""
-    return np.stack([p[..., 0] / 512.0 - 1.0, (900.0 - p[..., 1]) / 512.0 - 1.0], -1)
+    h = HW_EM / 2
+    return np.stack([p[..., 0] / h - 1.0, (HW_BASE - p[..., 1]) / h - 1.0], -1)
 
 
 # ---------------------------------------------------------------- augmentation
@@ -30,7 +35,7 @@ def augment(contours, labels: np.ndarray, rng: np.random.Generator):
     sh = rng.uniform(-0.1, 0.1)
     R = np.array([[np.cos(ang), -np.sin(ang)], [np.sin(ang), np.cos(ang)]])
     A = R @ np.array([[sx, sh], [0, sy]])
-    c = np.array([512.0, 388.0])
+    c = np.array([CX, CY])
     b = c - A @ c + rng.uniform(-30, 30, 2)
     out, lab_out, off = [], [], 0
     p_split = rng.choice([0.0, 0.1, 0.25])
@@ -57,9 +62,9 @@ def augment(contours, labels: np.ndarray, rng: np.random.Generator):
 
 # ---------------------------------------------------------------- features
 def _lookup(mask: np.ndarray, p_hw: np.ndarray) -> np.ndarray:
-    s = MASK_RES / 1024.0
+    s = MASK_RES / HW_EM
     x = np.clip((p_hw[..., 0] * s).astype(int), 0, MASK_RES - 1)
-    y = np.clip(((900.0 - p_hw[..., 1]) * s).astype(int), 0, MASK_RES - 1)
+    y = np.clip(((HW_BASE - p_hw[..., 1]) * s).astype(int), 0, MASK_RES - 1)
     return mask[y, x]
 
 
@@ -78,7 +83,7 @@ def _thickness(mask, pts, normals, max_d=420.0, step=4.0, auto_inward=True):
     occ[:, 0] = True  # we start on the boundary
     out = np.argmin(occ, axis=1).astype(float)
     out[occ.all(1)] = len(ts)
-    return out * step / 1024.0, n
+    return out * step / HW_EM, n
 
 
 def glyph_features(contours) -> dict:
@@ -89,11 +94,12 @@ def glyph_features(contours) -> dict:
     idx = np.concatenate([np.arange(len(c)) for c in contours])
     clen = np.concatenate([np.full(len(c), len(c)) for c in contours])
     offs = np.cumsum([0] + [len(c) for c in contours])[:-1]
-    nxt = np.array([offs[cid[i]] + (idx[i] + 1) % clen[i] for i in range(N)])
-    prv = np.array([offs[cid[i]] + (idx[i] - 1) % clen[i] for i in range(N)])
+    nxt = offs[cid] + (idx + 1) % clen
+    prv = offs[cid] + (idx - 1) % clen
 
     cub = np.stack([s.cubic() for s in segs])  # (N, 4, 2)
-    mid = np.stack([s.sample(3)[1] for s in segs])
+    s5 = np.stack([s.sample(5) for s in segs])  # (N, 5, 2): t = 0, .25, .5, .75, 1
+    mid = s5[:, 2]
     lens = np.array([s.length() for s in segs])
     t0 = np.stack([s.tangent_start() for s in segs])
     t1 = np.stack([s.tangent_end() for s in segs])
@@ -114,12 +120,15 @@ def glyph_features(contours) -> dict:
     outer_sign = np.sign(areas[np.argmax(np.abs(areas))]) or 1.0
     hole = (np.sign(areas) != outer_sign).astype(float)[cid]
     carea = np.log1p(np.abs(areas))[cid] / 14.0
-    cum = np.concatenate([np.cumsum(np.concatenate([[0], [s.length() for s in c][:-1]])) / max(1e-6, sum(s.length() for s in c)) for c in contours])
-    per = np.array([sum(s.length() for s in c) for c in contours])[cid] / 4096.0
+    perim = np.array([lens[o:o + len(c)].sum() for c, o in zip(contours, offs)])
+    # arclength position of each segment start along its contour, as a fraction of the perimeter
+    start = np.cumsum(lens) - lens  # arclength from the first contour's start
+    cum = (start - np.repeat(start[offs], clen[offs])) / np.maximum(perim, 1e-6)[cid]
+    per = perim[cid] / 4096.0
 
     # thickness probes from the raster
     mask = render(contours, MASK_RES)
-    nrm_mid = np.stack([s.sample(5)[3] - s.sample(5)[1] for s in segs])
+    nrm_mid = s5[:, 3] - s5[:, 1]
     nrm_mid = nrm_mid / (np.linalg.norm(nrm_mid, axis=1, keepdims=True) + 1e-9)
     nrm_mid = np.stack([-nrm_mid[:, 1], nrm_mid[:, 0]], 1)
     th_mid, inward = _thickness(mask, mid, nrm_mid)
@@ -144,7 +153,7 @@ def glyph_features(contours) -> dict:
             hole[:, None], carea[:, None], per[:, None], (clen / 100.0)[:, None],
             np.stack([np.sin(2 * np.pi * cum), np.cos(2 * np.pi * cum)], 1),
             th_mid[:, None], th_vtx[:, None], th_fwd[:, None], th_bwd[:, None],
-            sgn * inward,  # inward normal (orientation-free)
+            inward,  # normal at the midpoint, pointing into the glyph (orientation-free)
         ],
         1,
     ).astype(np.float32)

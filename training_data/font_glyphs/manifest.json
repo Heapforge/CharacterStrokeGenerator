@@ -294666,6 +294666,57 @@
     "noto-serif-cjk-jp",
     "noto-serif-cjk-kr"
    ]
+  },
+  "⾵": {
+   "data_files": [
+    "⾵.json"
+   ],
+   "fonts": [
+    "noto-sans-cjk-sc",
+    "noto-sans-cjk-hk",
+    "noto-sans-cjk-tc",
+    "noto-sans-cjk-jp",
+    "noto-sans-cjk-kr",
+    "noto-serif-cjk-sc",
+    "noto-serif-cjk-hk",
+    "noto-serif-cjk-tc",
+    "noto-serif-cjk-jp",
+    "noto-serif-cjk-kr"
+   ]
+  },
+  "⾾": {
+   "data_files": [
+    "⾾.json"
+   ],
+   "fonts": [
+    "noto-sans-cjk-sc",
+    "noto-sans-cjk-hk",
+    "noto-sans-cjk-tc",
+    "noto-sans-cjk-jp",
+    "noto-sans-cjk-kr",
+    "noto-serif-cjk-sc",
+    "noto-serif-cjk-hk",
+    "noto-serif-cjk-tc",
+    "noto-serif-cjk-jp",
+    "noto-serif-cjk-kr"
+   ]
+  },
+  "⿀": {
+   "data_files": [
+    "⿀.json"
+   ],
+   "fonts": [
+    "noto-sans-cjk-sc",
+    "noto-sans-cjk-hk",
+    "noto-sans-cjk-tc",
+    "noto-sans-cjk-jp",
+    "noto-sans-cjk-kr",
+    "noto-serif-cjk-sc",
+    "noto-serif-cjk-hk",
+    "noto-serif-cjk-tc",
+    "noto-serif-cjk-jp",
+    "noto-serif-cjk-kr"
+   ]
   }
  },
  "missing": [

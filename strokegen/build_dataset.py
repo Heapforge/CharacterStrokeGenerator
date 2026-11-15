@@ -19,18 +19,12 @@ from collections import Counter
 
 import numpy as np
 
+from .fonts import FONT_PRIORITY, font_rank  # noqa: F401  (FONT_PRIORITY re-exported)
+from .paths import GLYPHS, HWDATA, ROOT  # noqa: F401
+from .paths import PROCESSED as OUT
 from .svg_io import Seg, load_svg_glyph, parse_hw_path
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GLYPHS = os.path.join(ROOT, "training_data", "font_glyphs")
-HWDATA = os.path.join(ROOT, "training_data", "hanzi-writer-data-youyin", "data")
-OUT = os.path.join(ROOT, "data", "processed")
-FONT_PRIORITY = [
-    "gkai00mp", "bkai00mp", "ukai-cn", "ukai-hk", "ukai-tw", "ukai-tw-mbe",
-    "noto-sans", "ubuntu", "liberation-serif", "merriweather",
-    "noto-sans-cjk-sc", "noto-sans-cjk-hk", "noto-sans-cjk-tc", "noto-sans-cjk-jp", "noto-sans-cjk-kr",
-    "noto-serif-cjk-sc", "noto-serif-cjk-hk", "noto-serif-cjk-tc", "noto-serif-cjk-jp", "noto-serif-cjk-kr",
-]
+SPLIT_BUCKETS = 20  # 1 bucket test, 1 val, the rest train: 5 / 5 / 90 %
 TOL = 1.01  # hw data is integer-rounded
 SHAPE_TOL = 5.0  # max distance between an hw segment and a font segment to count as the same one
 EDGE_TOL = 2.0  # max distance of an off-vertex bridge end from the font outline
@@ -185,12 +179,23 @@ def outline_hash(contours) -> str:
     return h.hexdigest()
 
 
+def split_of(outline: str) -> str:
+    """Split for an outline group, a function of its hash alone.
+
+    Characters with identical outlines always land together, and adding or removing characters
+    never moves another glyph between the splits.
+    """
+    b = int(outline[:12], 16) % SPLIT_BUCKETS
+    return "test" if b == 0 else "val" if b == 1 else "train"
+
+
 def process(item, min_coverage: float = MIN_COVERAGE, min_vertex_match: float = MIN_VERTEX_MATCH):
     char, entry = item
     path = os.path.join(HWDATA, f"{char}.json")
     if f"{char}.json" not in entry["data_files"] or not os.path.exists(path):
         return char, None, "no_plain_json"
-    hw = json.load(open(path, encoding="utf-8"))
+    with open(path, encoding="utf-8") as f:
+        hw = json.load(f)
     if not hw.get("strokes"):
         return char, None, "empty_hw"
     hw_pts = []
@@ -201,11 +206,12 @@ def process(item, min_coverage: float = MIN_COVERAGE, min_vertex_match: float = 
         return char, None, "empty_hw"
     hw_pts = np.array(hw_pts)
     best = None
-    for f in sorted(entry["fonts"], key=FONT_PRIORITY.index):
+    for f in sorted(entry["fonts"], key=font_rank):
         svg_path = os.path.join(GLYPHS, f, f"{char}.svg")
         if not os.path.exists(svg_path):
             continue
-        svg = open(svg_path, encoding="utf-8").read()
+        with open(svg_path, encoding="utf-8") as fh:
+            svg = fh.read()
         contours = load_svg_glyph(svg)
         if not contours:
             continue
@@ -245,14 +251,15 @@ def process(item, min_coverage: float = MIN_COVERAGE, min_vertex_match: float = 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--workers", type=int, default=max(1, os.cpu_count() - 2))
+    ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 2))
     args = ap.parse_args()
-    man = json.load(open(os.path.join(GLYPHS, "manifest.json"), encoding="utf-8"))["characters"]
+    with open(os.path.join(GLYPHS, "manifest.json"), encoding="utf-8") as f:
+        man = json.load(f)["characters"]
     items = [(c, e) for c, e in man.items() if e["fonts"]]
     if args.limit:
         random.Random(0).shuffle(items)
         items = items[: args.limit]
-    with mp.get_context("fork").Pool(args.workers) as pool:
+    with mp.get_context().Pool(args.workers) as pool:
         results = pool.map(process, items, chunksize=32)
     status = Counter(s for _, _, s in results)
     print("status:", dict(status))
@@ -267,14 +274,9 @@ def main():
     for r in recs:
         groups.setdefault(r["hash"], []).append(r)
     print(f"{len(groups)} distinct outlines ({len(recs) - len(groups)} records share an outline)")
-    order = list(groups.values())
-    random.Random(0).shuffle(order)
-    n = len(recs)
-    n_val = n_test = max(1, n // 20)
-    splits = {"test": [], "val": [], "train": []}
-    for g in order:
-        name = "test" if len(splits["test"]) < n_test else "val" if len(splits["val"]) < n_val else "train"
-        splits[name] += g
+    splits: dict[str, list[dict]] = {"test": [], "val": [], "train": []}
+    for h, g in groups.items():
+        splits[split_of(h)] += g
     os.makedirs(OUT, exist_ok=True)
     for name, rs in splits.items():
         with open(os.path.join(OUT, f"{name}.pkl"), "wb") as f:

@@ -13,6 +13,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .features import N_BUCKETS, N_FEAT
+from .order import N_PFEAT, N_SFEAT
+
+N_FOURIER = 16
+FOURIER_COORDS = 6  # segment midpoint, start and end (x, y each)
 
 
 def fourier(x: torch.Tensor, n: int = 16) -> torch.Tensor:
@@ -73,7 +77,8 @@ class CutModel(nn.Module):
         self.heads = heads
         self.cnn = RasterCNN()
         self.inp = nn.Sequential(
-            nn.Linear(N_FEAT + 4 * 16 * 2 + n_probe * self.cnn.out_dim, d), nn.GELU(), nn.Linear(d, d)
+            nn.Linear(N_FEAT + FOURIER_COORDS * N_FOURIER * 2 + n_probe * self.cnn.out_dim, d), nn.GELU(),
+            nn.Linear(d, d)
         )
         self.bias = nn.Embedding(N_BUCKETS, heads)
         self.layers = nn.ModuleList([BiasedLayer(d, heads) for _ in range(layers)])
@@ -85,11 +90,10 @@ class CutModel(nn.Module):
 
     def forward(self, batch):
         feat, pad = batch["feat"], batch["pad"]  # pad: (B,N) True for padding
-        B, N, _ = feat.shape
         xy = feat[..., 8:10]  # segment midpoint
         se = torch.cat([feat[..., 0:2], feat[..., 6:8]], -1)  # start, end
         cnnf = self.cnn(batch["img"], batch["probe"])
-        x = self.inp(torch.cat([feat, fourier(torch.cat([xy, se], -1)[..., :4]), cnnf], -1))
+        x = self.inp(torch.cat([feat, fourier(torch.cat([xy, se], -1), N_FOURIER), cnnf], -1))
         bias = self.bias(batch["bucket"].long()).permute(0, 3, 1, 2)  # (B,H,N,N)
         bias = bias.masked_fill(pad[:, None, None, :], float("-inf"))
         for layer in self.layers:
@@ -105,7 +109,8 @@ class CutModel(nn.Module):
 def cut_losses(out, batch, pos_weight: float = 3.0):
     m = batch["cut_mask"]
     l_cut = F.binary_cross_entropy_with_logits(
-        out["cut"].float(), batch["cut"], weight=m, pos_weight=torch.tensor(pos_weight, device=m.device), reduction="sum"
+        out["cut"].float(), batch["cut"], weight=m, pos_weight=torch.tensor(pos_weight, device=m.device),
+        reduction="sum",
     ) / m.sum().clamp(min=1)
     lab = batch["lab"]
     valid = (lab >= 0) & ~batch["pad"]
@@ -155,3 +160,14 @@ class OrderModel(nn.Module):
         f = self.pair(torch.cat(cat, -1)).squeeze(-1)
         prec = f - f.transpose(1, 2)
         return dict(dir=d, prec=prec)
+
+
+class OrderNet(nn.Module):
+    """OrderModel with Fourier features on the resampled median points."""
+
+    def __init__(self, d: int = 256, layers: int = 4):
+        super().__init__()
+        self.core = OrderModel(N_SFEAT + 32 * 12, d=d, layers=layers, pair_dim=N_PFEAT)
+
+    def forward(self, x, pad, pair):
+        return self.core(torch.cat([x, fourier(x[..., :32], 6)], -1), pad, pair)

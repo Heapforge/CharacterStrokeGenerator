@@ -1,9 +1,9 @@
 import json, os, sys
 sys.path.insert(0, ".")
 from strokegen.svg_io import load_svg_glyph, parse_hw_path
-from tools.fix_svgs import check_iou
+from tools.scratch.fix_svgs import check_iou
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FONT_DIR = os.path.join(ROOT, "training_data", "font_glyphs", "noto-sans")
 DATA_DIR = os.path.join(ROOT, "training_data", "hanzi-writer-data-youyin", "data")
 

@@ -99,7 +99,9 @@ def reroute(stroke_path: str, med):
     V, G, used, clear = sk
     half = max(clear.values())
     U = V[used]
-    nearest = lambda p: int(used[np.argmin(np.linalg.norm(U - p, axis=1))])
+    def nearest(p):
+        return int(used[np.argmin(np.linalg.norm(U - p, axis=1))])
+
     best = list(map(list, med))
     best_h = hidden(stroke_path, med)[0]
     # handle runs from the last one back, so earlier indices stay valid

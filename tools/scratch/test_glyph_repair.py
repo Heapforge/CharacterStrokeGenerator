@@ -2,7 +2,7 @@ import json, sys
 sys.path.insert(0, ".")
 from strokegen.svg_io import load_svg_glyph, segs_to_path, HW_BASE
 from strokegen.raster import render, iou
-from tools.fix_svgs import check_iou
+from tools.scratch.fix_svgs import check_iou
 
 chars = ["Q", "Ö", "6", "8", "9", "4", "R", "E", "æ", "œ", "Ɓ", "Ƃ", "ƥ", "ð"]
 for c in chars:

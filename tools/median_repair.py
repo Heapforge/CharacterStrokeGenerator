@@ -21,47 +21,31 @@ import sys
 
 import numpy as np
 import shapely
-from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
-from scipy.spatial import Voronoi
 from shapely.geometry import LineString, Point
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from strokegen.medians import rdp  # noqa: E402
+from strokegen.medians import rdp, skeleton_graph, stroke_polygon  # noqa: E402
 from strokegen.svg_io import parse_hw_path  # noqa: E402
-from tools.fix_hole_strokes import median_coverage, poly  # noqa: E402
+from tools.fix_hole_strokes import median_coverage  # noqa: E402
 
 STEP = 5.0
 MIN_GAIN = 0.02
 
 
 def holey_polygon(loops):
-    g = None
-    for p in sorted((p for p in (poly(l) for l in loops) if p is not None), key=lambda p: -p.area):
-        g = p if g is None else g.symmetric_difference(p)
-    if g is not None and g.geom_type != "Polygon":
-        parts = [q for q in getattr(g, "geoms", []) if q.geom_type == "Polygon"]
-        g = max(parts, key=lambda q: q.area) if parts else None
-    return g
+    """The stroke's shape with its counters (strokegen.medians.stroke_polygon)."""
+    return stroke_polygon(loops)
 
 
 def skeleton(P):
-    pts = []
-    for ring in [P.exterior, *P.interiors]:
-        pts.append(np.asarray(shapely.segmentize(ring, STEP).coords)[:-1])
-    pts = np.concatenate(pts)
-    vor = Voronoi(pts + np.random.default_rng(0).normal(0, 1e-3, pts.shape))
-    V = vor.vertices
-    inside = shapely.contains_xy(P, V[:, 0], V[:, 1])
-    E = np.array([e for e in vor.ridge_vertices if e[0] >= 0 and e[1] >= 0 and inside[e[0]] and inside[e[1]]])
-    if len(E) == 0:
+    """(V, G, used, clearance per used vertex) of P's Voronoi skeleton, or None."""
+    sk = skeleton_graph(P, STEP)
+    if sk is None:
         return None
-    w = np.linalg.norm(V[E[:, 0]] - V[E[:, 1]], axis=1) + 1e-6
-    n = len(V)
-    G = coo_matrix((np.r_[w, w], (np.r_[E[:, 0], E[:, 1]], np.r_[E[:, 1], E[:, 0]])), shape=(n, n)).tocsr()
-    used = np.unique(E)
-    clear = np.array([P.boundary.distance(Point(v)) for v in V[used]])
+    V, G, used = sk
+    clear = shapely.distance(shapely.points(V[used]), P.boundary)
     return V, G, used, dict(zip(used.tolist(), clear))
 
 

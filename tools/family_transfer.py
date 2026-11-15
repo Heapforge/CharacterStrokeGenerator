@@ -27,7 +27,7 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from strokegen.raster import iou  # noqa: E402
-from strokegen.svg_io import contour_polygon, load_svg_glyph, parse_hw_path, segs_to_path  # noqa: E402
+from strokegen.svg_io import load_svg_glyph, parse_hw_path, segs_to_path  # noqa: E402
 from tools.fix_hole_strokes import holey_median, poly, raster, ring_median, union_raster  # noqa: E402
 
 FONT = os.path.join(ROOT, "training_data", "font_glyphs", "noto-sans")
@@ -54,7 +54,7 @@ def find_shift(tmpl, target):
     """(shift, matched target contour ids) if every template contour appears in target with one shift."""
     t0 = tmpl[0]
     n0, p0 = signature(t0)
-    for j, c in enumerate(target):
+    for c in target:
         n, p = signature(c)
         if n != n0:
             continue
@@ -153,7 +153,7 @@ def transfer(char, pred, templates):
         return None
     total = area(target)
     best = None
-    for tc, (tg, td) in templates.items():
+    for tc, (tg, _) in templates.items():
         if tc == char or len(tg) > len(target):
             continue
         r = find_shift(tg, target)

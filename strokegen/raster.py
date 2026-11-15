@@ -4,10 +4,10 @@ from __future__ import annotations
 import cairo
 import numpy as np
 
-from .svg_io import Seg
+from .svg_io import HW_BASE, HW_EM, Seg
 
 # hw frame: x in [0, 1024], y in [-124, 900] (y up)
-X0, Y_TOP, SPAN = 0.0, 900.0, 1024.0
+X0, Y_TOP, SPAN = 0.0, HW_BASE, HW_EM
 
 
 def _trace(ctx: cairo.Context, loop: list[Seg]) -> None:
@@ -38,11 +38,12 @@ def render(loops: list[list[Seg]], size: int = 256, even_odd: bool = False) -> n
     return buf.astype(np.float32) / 255.0
 
 
-def render_union(strokes: list[list[Seg]], size: int = 256) -> np.ndarray:
-    """Union of separately filled strokes (each stroke filled with nonzero winding)."""
+def render_union(strokes: list[list[list[Seg]]], size: int = 256) -> np.ndarray:
+    """Union of separately filled strokes; each stroke is a list of loops, filled with nonzero winding."""
     out = np.zeros((size, size), np.float32)
-    for st in strokes:
-        out = np.maximum(out, render([st], size))
+    for loops in strokes:
+        if loops:
+            out = np.maximum(out, render(loops, size))
     return out
 
 
@@ -50,9 +51,3 @@ def iou(a: np.ndarray, b: np.ndarray, thr: float = 0.5) -> float:
     A, B = a > thr, b > thr
     u = np.logical_or(A, B).sum()
     return float(np.logical_and(A, B).sum() / u) if u else 1.0
-
-
-def hw_to_pixel(p: np.ndarray, size: int) -> np.ndarray:
-    """hw coords -> pixel coords (x right, y down), continuous."""
-    s = size / SPAN
-    return np.stack([(p[..., 0] - X0) * s, (Y_TOP - p[..., 1]) * s], -1)

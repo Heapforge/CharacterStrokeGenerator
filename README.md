@@ -21,8 +21,9 @@ of which 11K were in the original dataset and the rest are data generated from t
 1. **Cut (learned, Stage A).** A transformer over outline segments predicts the vertices where one stroke
    ends and the next begins, plus a same-stroke affinity for every pair of segments. Cuts split the
    contours into chains, and chains are clustered into strokes. Each stroke is closed with bridge
-   segments: straight lines, or tangent-continuous cubic curves like the ones in the training data.
-   Outline segments are never changed, so the strokes together render the original glyph.
+   segments: straight lines, or tangent-continuous cubic curves like the ones in the training data
+   (a curve that would bulge out of the glyph, as at the square stroke ends of sans fonts, is
+   straightened). Outline segments are never changed, so the strokes together render the original glyph.
 2. **Medians (geometry, Stage B).** Voronoi skeleton of each stroke → longest path → corner spurs
    trimmed → Ramer-Douglas-Peucker simplification.
 3. **Order and direction (learned, Stage C).** A transformer over strokes, using per-stroke shape and
@@ -42,8 +43,12 @@ uv run python -m strokegen.evaluate --chars 永林  # specific characters -> out
 uv run python -m strokegen.predict training_data/font_glyphs/ukai-cn/永.svg -o 永.json
 uv run python -m strokegen.predict some_glyph_dir/ -o out_dir/
 uv run --group dev pytest tests
+uv run --group dev ruff check .
 uv run python tools/dashboard.py          # review dashboard on http://127.0.0.1:8417
 ```
+
+Training needs a CUDA GPU. Checkpoints record the feature version they were trained on, and
+`StrokeGenerator` refuses one that does not match the code; retrain after a feature change.
 
 ### Review dashboard
 
@@ -65,8 +70,17 @@ uv run python tools/dashboard.py          # review dashboard on http://127.0.0.1
    medians are joined end to end instead. ✂ splits a merged stroke again.
 5. **Save** writes `training_data/hanzi-writer-data-youyin/data/{char}.json` (or a `-jp`/`-ko`
    variant) and adds plain files to the font glyph manifest so `build_dataset` uses them.
-   Overwriting an existing file needs an explicit **Overwrite** click. Existing `radStrokes`
-   are dropped because they refer to the old strokes.
+   Overwriting an existing file needs an explicit **Overwrite** click (also when saving with
+   **S**). Existing `radStrokes` are dropped because they refer to the old strokes.
+
+The dashboard has no login. It only answers requests addressed to `127.0.0.1`/`localhost` and
+refuses cross-site writes; with `--host 0.0.0.0` anyone on the network can change the training
+data. The first time a font without exported glyphs is opened, its glyphs are unpacked from the
+font file in the background (this needs FontForge's Python bindings).
+
+`tools/` also has command-line correction tools (`fix_hole_strokes.py`, `median_repair.py`,
+`median_reroute.py`, `family_transfer.py`, `verify_glyph.py`, `render_compare.py`, ...).
+`tools/scratch/` keeps one-off scripts from earlier manual passes; see its README before running one.
 
 ## How we fix issues with characters
 This model is still early in its training phase and as a result cannot be trusted. Many characters,
@@ -75,5 +89,5 @@ especially ones generated from non-CJK scripts are often completely broken once 
 To automate away the fixing of broken results we use general-purpose multimodal LLM models for fixing these characters in-place.
 Currently, we use Claude Opus 5.5 to analyze general patterns in broken characters, which then turn into automated scripts for some
 issues, while everything else that's more complex is analyzed and fixed by Sonnet 5.5 subagents manually. The subagents prompt from
-Opus is also inputted into Antigravity, where we use Gemini 3.8 Flash High to fix characters, though results often require a lot of corrections,
+Opus is also inputted into Antigravity, where we use Gemini 4 Hydrogen High to fix characters, though results often require a lot of corrections,
 since Gemini often does not produce any scripts to fix common issues.

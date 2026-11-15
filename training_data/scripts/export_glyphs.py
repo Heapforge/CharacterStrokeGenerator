@@ -1,7 +1,8 @@
 """Export the original font glyphs for every character in hanzi-writer-data-youyin.
 
 usage: python -I export_glyphs.py <font path, e.g. dir/ukai.ttc(AR PL UKai CN)> <chars.txt | --all> <out_dir>
-Writes <out_dir>/<char>.svg for each character the font contains.
+Writes <out_dir>/<char>.svg for each character the font contains. Lines of chars.txt that are
+not a single code point are skipped.
 """
 import os
 import sys
@@ -36,7 +37,7 @@ else:
     chars = [l.rstrip("\n") for l in open(chars_file, encoding="utf-8") if l.strip()]
 by_glyph: dict[str, list[str]] = {}
 for c in chars:
-    if c.startswith(".") or any(ch in c for ch in "/\\\0") or c.strip() != c:
+    if len(c) != 1 or c.startswith(".") or any(ch in c for ch in "/\\\0") or c.strip() != c:
         continue
     gname = by_code.get(ord(c))
     if gname:

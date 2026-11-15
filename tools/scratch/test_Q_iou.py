@@ -2,7 +2,7 @@ import sys
 sys.path.insert(0, ".")
 import numpy as np
 from strokegen.svg_io import load_svg_glyph, segs_to_path, Seg
-from tools.fix_svgs import check_iou
+from tools.scratch.fix_svgs import check_iou
 
 cnts = load_svg_glyph(open("training_data/font_glyphs/noto-sans/Q.svg").read())
 # Contour 0 has 16 segments.

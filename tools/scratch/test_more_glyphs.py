@@ -1,7 +1,7 @@
 import sys
 sys.path.insert(0, ".")
 from strokegen.svg_io import load_svg_glyph, segs_to_path
-from tools.fix_svgs import check_iou
+from tools.scratch.fix_svgs import check_iou
 
 chars = ["6", "8", "9", "@", "&", "æ", "œ", "Ɓ", "Ƃ", "ƥ", "ð", "ª", "®"]
 for c in chars:

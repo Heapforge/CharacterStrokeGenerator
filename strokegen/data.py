@@ -8,11 +8,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .decode import fill_unassigned
 from .features import augment, glyph_features, targets
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROCESSED = os.path.join(ROOT, "data", "processed")
+from .paths import PROCESSED, ROOT  # noqa: F401  (ROOT re-exported for older imports)
 
 
 def load_split(name: str) -> list[dict]:
@@ -20,20 +17,34 @@ def load_split(name: str) -> list[dict]:
         return pickle.load(f)
 
 
+def worker_rng(state: dict) -> np.random.Generator:
+    """One generator per process, seeded from torch.
+
+    torch seeds each DataLoader worker from the main process RNG, so with torch.manual_seed set
+    the augmentation stream is reproducible, and it keeps advancing across epochs even with
+    persistent workers.
+    """
+    pid = os.getpid()
+    if state.get("pid") != pid:
+        state.update(pid=pid, rng=np.random.default_rng(torch.initial_seed()))
+    return state["rng"]
+
+
 class CutDataset(Dataset):
     def __init__(self, recs: list[dict], train: bool, max_segs: int = 400):
         self.recs = [r for r in recs if sum(len(c) for c in r["contours"]) <= max_segs]
         self.train = train
+        self._rng: dict = {}
 
     def __len__(self):
         return len(self.recs)
 
     def __getitem__(self, i):
         r = self.recs[i]
-        contours, lab = r["contours"], fill_unassigned(r["contours"], r["seg_stroke"])
+        # segments the GT does not assign stay -1: targets() masks them out of both losses
+        contours, lab = r["contours"], np.asarray(r["seg_stroke"])
         if self.train:
-            rng = np.random.default_rng()
-            contours, lab = augment(contours, lab, rng)
+            contours, lab = augment(contours, lab, worker_rng(self._rng))
         f = glyph_features(contours)
         f.update(targets(contours, lab, f["nxt"]))
         f["index"] = i

@@ -1,7 +1,7 @@
 import sys
 sys.path.insert(0, ".")
 from strokegen.svg_io import load_svg_glyph
-from tools.fix_svgs import check_iou
+from tools.scratch.fix_svgs import check_iou
 
 cnts = load_svg_glyph(open("training_data/font_glyphs/noto-sans/E.svg").read())
 

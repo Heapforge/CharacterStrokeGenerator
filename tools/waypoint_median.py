@@ -40,7 +40,7 @@ def _graph(stroke_path):
 def leaves(stroke_path):
     V, G, used, clear = _graph(stroke_path)
     deg = np.diff(G.indptr)
-    return [tuple(np.round(V[i]).astype(int)) for i in used if deg[i] == 1]
+    return [tuple(int(v) for v in np.round(V[i])) for i in used if deg[i] == 1]
 
 
 def waypoint_median(stroke_path, points, eps=3.0):

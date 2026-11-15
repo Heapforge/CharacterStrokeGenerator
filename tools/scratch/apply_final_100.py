@@ -10,7 +10,7 @@ sys.path.insert(0, ".")
 from strokegen.svg_io import load_svg_glyph, segs_to_path, Seg, parse_hw_path
 from strokegen.raster import render, iou, SPAN, X0, Y_TOP, _trace
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FONT_DIR = os.path.join(ROOT, "training_data", "font_glyphs", "noto-sans")
 DATA_DIR = os.path.join(ROOT, "training_data", "hanzi-writer-data-youyin", "data")
 MANIFEST_PATH = os.path.join(ROOT, "training_data", "font_glyphs", "manifest.json")

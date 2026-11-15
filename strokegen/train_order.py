@@ -2,12 +2,12 @@
 
 usage: python -m strokegen.train_order [--epochs 80]
 Stroke medians come from Stage B run on the GT stroke outlines, so training sees the same
-kind of input as inference.
+kind of input as inference. That Stage B output is cached in data/processed/order_{split}.pkl
+and rebuilt automatically when the split or the order features change.
 """
 from __future__ import annotations
 
 import argparse
-import math
 import multiprocessing as mp
 import os
 import pickle
@@ -18,13 +18,25 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-from .data import PROCESSED, load_split, to_device
+from .data import load_split, to_device, worker_rng
 from .medians import median_distance
-from .model import OrderModel
-from .order import (N_PFEAT, N_SFEAT, augment_strokes, decode_order, kendall_tau, pair_features, stroke_features,
-                    stroke_record)
+from .model import OrderNet
+from .order import (
+    FEATURE_VERSION,
+    N_PFEAT,
+    N_SFEAT,
+    augment_strokes,
+    decode_order,
+    kendall_tau,
+    pair_features,
+    stroke_features,
+    stroke_record,
+)
+from .paths import CKPT, PROCESSED
 from .svg_io import parse_hw_path
-from .train_cut import CKPT
+from .train_cut import default_workers, lr_schedule
+
+__all__ = ["OrderNet", "order_split"]  # OrderNet lives in model.py; re-exported for older imports
 
 
 def _prep(r):
@@ -39,19 +51,28 @@ def _prep(r):
 
 
 def order_split(name: str, workers: int = 8) -> list[dict]:
+    """Stage B output for a split, cached; the cache is rebuilt when the split file or the order
+    features changed since it was written."""
     path = os.path.join(PROCESSED, f"order_{name}.pkl")
+    key = dict(feat_version=FEATURE_VERSION, source_mtime=os.path.getmtime(os.path.join(PROCESSED, f"{name}.pkl")))
     if os.path.exists(path):
-        return pickle.load(open(path, "rb"))
+        with open(path, "rb") as f:
+            cached = pickle.load(f)
+        if isinstance(cached, dict) and cached.get("key") == key:
+            return cached["recs"]
+        print(f"{path} is stale, rebuilding", flush=True)
     recs = load_split(name)
-    with mp.get_context("fork").Pool(workers) as pool:
+    with mp.get_context().Pool(workers) as pool:
         out = pool.map(_prep, recs, chunksize=16)
-    pickle.dump(out, open(path, "wb"), protocol=pickle.HIGHEST_PROTOCOL)
+    with open(path, "wb") as f:
+        pickle.dump(dict(key=key, recs=out), f, protocol=pickle.HIGHEST_PROTOCOL)
     return out
 
 
 class OrderDataset(Dataset):
     def __init__(self, recs, train: bool):
         self.recs, self.train = recs, train
+        self._rng: dict = {}
 
     def __len__(self):
         return len(self.recs)
@@ -62,7 +83,7 @@ class OrderDataset(Dataset):
         strokes = r["strokes"]
         perm = np.arange(S)
         if self.train:
-            rng = np.random.default_rng()
+            rng = worker_rng(self._rng)
             strokes = augment_strokes(strokes, rng)
             perm = rng.permutation(S)
         ordered = [strokes[p] for p in perm]
@@ -122,43 +143,34 @@ def evaluate(model, loader, dev):
     return dict(dir_acc=dir_ok / max(1, n), order_exact=exact / max(1, n_glyph), tau=float(np.mean(taus)))
 
 
-class OrderNet(torch.nn.Module):
-    """OrderModel with Fourier features on the median points."""
-
-    def __init__(self, d=256, layers=4):
-        super().__init__()
-        self.core = OrderModel(N_SFEAT + 32 * 12, d=d, layers=layers, pair_dim=N_PFEAT)
-
-    def forward(self, x, pad, pair):
-        from .model import fourier
-
-        return self.core(torch.cat([x, fourier(x[..., :32], 6)], -1), pad, pair)
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=80)
     ap.add_argument("--bs", type=int, default=64)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--layers", type=int, default=6)
-    ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--workers", type=int, default=default_workers(6), help="DataLoader workers")
+    ap.add_argument("--prep-workers", type=int, default=default_workers(8), help="processes for the Stage B cache")
     ap.add_argument("--out", default="order.pt")
     args = ap.parse_args()
     torch.manual_seed(0)
+    if not torch.cuda.is_available():
+        raise SystemExit("train_order needs a CUDA device")
     dev = torch.device("cuda")
     t0 = time.time()
-    train, val = order_split("train"), order_split("val")
-    order_split("test")
+    train, val = order_split("train", args.prep_workers), order_split("val", args.prep_workers)
+    order_split("test", args.prep_workers)
     print(f"prepared order data in {time.time() - t0:.0f}s ({len(train)} train glyphs)", flush=True)
     tl = DataLoader(OrderDataset(train, True), args.bs, shuffle=True, num_workers=args.workers, collate_fn=collate,
                     drop_last=True, persistent_workers=True)
-    vl = DataLoader(OrderDataset(val, False), 128, num_workers=2, collate_fn=collate)
+    vl = DataLoader(OrderDataset(val, False), 128, num_workers=min(2, args.workers), collate_fn=collate)
     model = OrderNet(layers=args.layers).to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
-    total = args.epochs * len(tl)
-    warm = min(500, total // 10)
-    sched = torch.optim.lr_scheduler.LambdaLR(
-        opt, lambda s: min(1.0, (s + 1) / warm) * 0.5 * (1 + math.cos(math.pi * min(1.0, s / total))))
+    if not len(tl):
+        raise SystemExit(f"not enough training glyphs for one batch of {args.bs}")
+    sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_schedule(args.epochs * len(tl), 500))
+    os.makedirs(CKPT, exist_ok=True)
+    ckpt_args = dict(vars(args), feat_version=FEATURE_VERSION)
     best = -1
     for ep in range(args.epochs):
         model.train()
@@ -182,7 +194,7 @@ def main():
         score = m["dir_acc"] + m["order_exact"]
         if score > best:
             best = score
-            torch.save(dict(model=model.state_dict(), args=vars(args), epoch=ep, val=m), os.path.join(CKPT, args.out))
+            torch.save(dict(model=model.state_dict(), args=ckpt_args, epoch=ep, val=m), os.path.join(CKPT, args.out))
     print("best", best)
 
 

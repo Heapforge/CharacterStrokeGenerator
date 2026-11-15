@@ -25,7 +25,7 @@ from strokegen.raster import render, iou
 from strokegen.medians import stroke_median
 from shapely.geometry import Polygon, LineString, Point
 
-ROOT = "/home/madman10k/Documents/Heapforge/CharacterStrokeGenerator"
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(ROOT, "training_data/hanzi-writer-data-youyin/data")
 GLYPHS_DIR = os.path.join(ROOT, "training_data/font_glyphs/noto-sans")
 

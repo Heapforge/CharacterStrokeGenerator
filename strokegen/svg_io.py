@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 
@@ -15,6 +16,15 @@ _ARGC = {"M": 2, "L": 2, "H": 1, "V": 1, "Q": 4, "T": 2, "C": 6, "S": 4, "Z": 0}
 
 HW_EM = 1024.0
 HW_BASE = 900.0  # y_hw = HW_BASE - y_svg (for a 1024-unit viewBox starting at 0)
+# hw -> normalized model coordinates: ((x - NORM_CX) / NORM_SC, (y - NORM_CY) / NORM_SC)
+NORM_CX, NORM_CY, NORM_SC = 512.0, 388.0, 512.0
+
+
+@lru_cache(maxsize=64)
+def _ts(n: int) -> np.ndarray:
+    t = np.linspace(0.0, 1.0, n)[:, None]
+    t.flags.writeable = False
+    return t
 
 
 @dataclass
@@ -32,10 +42,10 @@ class Seg:
     def p1(self) -> np.ndarray:
         return self.pts[-1]
 
-    def reversed(self) -> "Seg":
+    def reversed(self) -> Seg:
         return Seg(self.kind, self.pts[::-1].copy())
 
-    def transformed(self, A: np.ndarray, b: np.ndarray) -> "Seg":
+    def transformed(self, A: np.ndarray, b: np.ndarray) -> Seg:
         return Seg(self.kind, self.pts @ A.T + b)
 
     def cubic(self) -> np.ndarray:
@@ -49,7 +59,7 @@ class Seg:
 
     def sample(self, n: int) -> np.ndarray:
         """n points at uniform t in [0, 1] (inclusive)."""
-        t = np.linspace(0.0, 1.0, n)[:, None]
+        t = _ts(n)
         p = self.pts
         if self.kind == "L":
             return p[0] * (1 - t) + p[1] * t
@@ -71,7 +81,7 @@ class Seg:
         s = self.sample(17)
         return float(np.linalg.norm(np.diff(s, axis=0), axis=1).sum())
 
-    def split(self, t: float = 0.5) -> tuple["Seg", "Seg"]:
+    def split(self, t: float = 0.5) -> tuple[Seg, Seg]:
         """De Casteljau split at t."""
         p = self.pts
         levels = [p]
@@ -188,8 +198,8 @@ def parse_path(d: str) -> list[Contour]:
     return contours
 
 
-_VIEWBOX = re.compile(r'viewBox\s*=\s*"([^"]*)"')
-_PATH_D = re.compile(r"<path\b[^>]*?\bd\s*=\s*\"([^\"]*)\"", re.S)
+_VIEWBOX = re.compile(r"""viewBox\s*=\s*(["'])(.*?)\1""", re.S)
+_PATH_D = re.compile(r"""<path\b[^>]*?\bd\s*=\s*(["'])(.*?)\1""", re.S)
 
 
 def svg_to_hw_transform(svg_text: str) -> tuple[np.ndarray, np.ndarray]:
@@ -201,7 +211,7 @@ def svg_to_hw_transform(svg_text: str) -> tuple[np.ndarray, np.ndarray]:
     m = _VIEWBOX.search(svg_text)
     vy, vh = 0.0, HW_EM
     if m:
-        vals = [float(v) for v in m.group(1).replace(",", " ").split()]
+        vals = [float(v) for v in m.group(2).replace(",", " ").split()]
         if len(vals) == 4 and vals[3] > 0:
             vy, vh = vals[1], vals[3]
     s = HW_EM / vh
@@ -214,7 +224,7 @@ def load_svg_glyph(svg_text: str) -> list[Contour]:
     """All path outlines of an SVG file, as contours in hw coordinates."""
     A, b = svg_to_hw_transform(svg_text)
     out = []
-    for d in _PATH_D.findall(svg_text):
+    for _, d in _PATH_D.findall(svg_text):
         for c in parse_path(d):
             out.append([s.transformed(A, b) for s in c])
     return out
