@@ -549,6 +549,38 @@ def test_dashboard_accepts_its_own_page(monkeypatch, tmp_path):
     assert status == 404
 
 
+def test_dashboard_batch_survives_odd_character_names(monkeypatch, tmp_path):
+    """Latin fonts export glyphs named by whitespace and backslash; one of them must not fail the batch."""
+    dashboard = _load_tool("dashboard", "tools/dashboard.py")
+    font_dir = tmp_path / "glyphs" / "some-font"
+    font_dir.mkdir(parents=True)
+    names = [" ", "\r", " ", " ", "A"] + (["\\"] if os.sep == "/" else [])
+    svg = '<svg viewBox="0 0 1024 1024"><path d="M100 400L900 400L900 480L100 480Z"/></svg>'
+    for c in names:
+        (font_dir / f"{c}.svg").write_text(svg, encoding="utf-8")
+    monkeypatch.setattr(dashboard, "GLYPHS", str(tmp_path / "glyphs"))
+    monkeypatch.setattr(dashboard, "HWDATA", str(tmp_path))
+
+    class StubModel:
+        def predict_files_batch(self, paths):
+            return [None if p is None else {"strokes": ["M 0 0 Z"], "medians": [[[0, 0], [1, 1]]],
+                                            "segStroke": [0], "error": None} for p in paths]
+
+    monkeypatch.setattr(dashboard.Handler, "model", StubModel(), raising=False)
+    chars = names + ["a/b", ".", ""]
+    status, res = _request(dashboard.Handler, "POST", "/api/predict_batch",
+                           json.dumps({"font": "some-font", "chars": chars}).encode())
+    assert status == 200
+    assert all(r.get("strokes") for r in res["results"][:len(names)])
+    assert all("invalid character name" in r["error"] for r in res["results"][len(names):])
+
+    for c in names:
+        assert dashboard.safe_char(c) == c
+    for c in ["/", "\0", ".", "..", " x", "x ", "a/b"]:
+        with pytest.raises(ValueError):
+            dashboard.safe_char(c)
+
+
 @pytest.mark.skipif(not HAS_CKPT, reason="requires checkpoints/{cut,order}.pt trained on the current features")
 def test_batch_reports_bad_glyphs_without_failing_the_rest():
     from strokegen.predict import GlyphError, StrokeGenerator

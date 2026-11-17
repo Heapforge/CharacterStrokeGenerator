@@ -294717,6 +294717,702 @@
     "noto-serif-cjk-jp",
     "noto-serif-cjk-kr"
    ]
+  },
+  "ǌ": {
+   "data_files": [
+    "ǌ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "merriweather"
+   ]
+  },
+  "ǳ": {
+   "data_files": [
+    "ǳ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "merriweather"
+   ]
+  },
+  "Ȭ": {
+   "data_files": [
+    "Ȭ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "merriweather"
+   ]
+  },
+  "Ȱ": {
+   "data_files": [
+    "Ȱ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "merriweather"
+   ]
+  },
+  "Ⱦ": {
+   "data_files": [
+    "Ⱦ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif"
+   ]
+  },
+  "Ɇ": {
+   "data_files": [
+    "Ɇ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif"
+   ]
+  },
+  "ɯ": {
+   "data_files": [
+    "ɯ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "ɰ": {
+   "data_files": [
+    "ɰ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "ʏ": {
+   "data_files": [
+    "ʏ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "ʞ": {
+   "data_files": [
+    "ʞ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "ʯ": {
+   "data_files": [
+    "ʯ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "ʱ": {
+   "data_files": [
+    "ʱ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "ʸ": {
+   "data_files": [
+    "ʸ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "Μ": {
+   "data_files": [
+    "Μ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "noto-sans-cjk-sc",
+    "noto-sans-cjk-hk",
+    "noto-sans-cjk-tc",
+    "noto-sans-cjk-jp",
+    "noto-sans-cjk-kr",
+    "noto-serif-cjk-sc",
+    "noto-serif-cjk-hk",
+    "noto-serif-cjk-tc",
+    "noto-serif-cjk-jp",
+    "noto-serif-cjk-kr"
+   ]
+  },
+  "ϰ": {
+   "data_files": [
+    "ϰ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "Ϻ": {
+   "data_files": [
+    "Ϻ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "Ш": {
+   "data_files": [
+    "Ш.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "merriweather",
+    "noto-sans-cjk-sc",
+    "noto-sans-cjk-hk",
+    "noto-sans-cjk-tc",
+    "noto-sans-cjk-jp",
+    "noto-sans-cjk-kr",
+    "noto-serif-cjk-sc",
+    "noto-serif-cjk-hk",
+    "noto-serif-cjk-tc",
+    "noto-serif-cjk-jp",
+    "noto-serif-cjk-kr"
+   ]
+  },
+  "ф": {
+   "data_files": [
+    "ф.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "merriweather",
+    "noto-sans-cjk-sc",
+    "noto-sans-cjk-hk",
+    "noto-sans-cjk-tc",
+    "noto-sans-cjk-jp",
+    "noto-sans-cjk-kr",
+    "noto-serif-cjk-sc",
+    "noto-serif-cjk-hk",
+    "noto-serif-cjk-tc",
+    "noto-serif-cjk-jp",
+    "noto-serif-cjk-kr"
+   ]
+  },
+  "ц": {
+   "data_files": [
+    "ц.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "merriweather",
+    "noto-sans-cjk-sc",
+    "noto-sans-cjk-hk",
+    "noto-sans-cjk-tc",
+    "noto-sans-cjk-jp",
+    "noto-sans-cjk-kr",
+    "noto-serif-cjk-sc",
+    "noto-serif-cjk-hk",
+    "noto-serif-cjk-tc",
+    "noto-serif-cjk-jp",
+    "noto-serif-cjk-kr"
+   ]
+  },
+  "ш": {
+   "data_files": [
+    "ш.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "merriweather",
+    "noto-sans-cjk-sc",
+    "noto-sans-cjk-hk",
+    "noto-sans-cjk-tc",
+    "noto-sans-cjk-jp",
+    "noto-sans-cjk-kr",
+    "noto-serif-cjk-sc",
+    "noto-serif-cjk-hk",
+    "noto-serif-cjk-tc",
+    "noto-serif-cjk-jp",
+    "noto-serif-cjk-kr"
+   ]
+  },
+  "щ": {
+   "data_files": [
+    "щ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "merriweather",
+    "noto-sans-cjk-sc",
+    "noto-sans-cjk-hk",
+    "noto-sans-cjk-tc",
+    "noto-sans-cjk-jp",
+    "noto-sans-cjk-kr",
+    "noto-serif-cjk-sc",
+    "noto-serif-cjk-hk",
+    "noto-serif-cjk-tc",
+    "noto-serif-cjk-jp",
+    "noto-serif-cjk-kr"
+   ]
+  },
+  "Ѧ": {
+   "data_files": [
+    "Ѧ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "ѧ": {
+   "data_files": [
+    "ѧ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "Ѻ": {
+   "data_files": [
+    "Ѻ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "ѻ": {
+   "data_files": [
+    "ѻ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "Ѽ": {
+   "data_files": [
+    "Ѽ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "ѽ": {
+   "data_files": [
+    "ѽ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "Ҙ": {
+   "data_files": [
+    "Ҙ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "merriweather"
+   ]
+  },
+  "Ӎ": {
+   "data_files": [
+    "Ӎ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "merriweather"
+   ]
+  },
+  "Ԗ": {
+   "data_files": [
+    "Ԗ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "Ԛ": {
+   "data_files": [
+    "Ԛ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif",
+    "merriweather"
+   ]
+  },
+  "ԡ": {
+   "data_files": [
+    "ԡ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "ᴬ": {
+   "data_files": [
+    "ᴬ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "ᵚ": {
+   "data_files": [
+    "ᵚ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "ᵴ": {
+   "data_files": [
+    "ᵴ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "ᶭ": {
+   "data_files": [
+    "ᶭ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "Ḝ": {
+   "data_files": [
+    "Ḝ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif",
+    "merriweather"
+   ]
+  },
+  "⁕": {
+   "data_files": [
+    "⁕.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "₆": {
+   "data_files": [
+    "₆.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "merriweather"
+   ]
+  },
+  "₿": {
+   "data_files": [
+    "₿.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif",
+    "merriweather"
+   ]
+  },
+  "℟": {
+   "data_files": [
+    "℟.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "™": {
+   "data_files": [
+    "™.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "liberation-serif",
+    "merriweather",
+    "noto-sans-cjk-sc",
+    "noto-sans-cjk-hk",
+    "noto-sans-cjk-tc",
+    "noto-sans-cjk-jp",
+    "noto-sans-cjk-kr",
+    "noto-serif-cjk-sc",
+    "noto-serif-cjk-hk",
+    "noto-serif-cjk-tc",
+    "noto-serif-cjk-jp",
+    "noto-serif-cjk-kr"
+   ]
+  },
+  "℺": {
+   "data_files": [
+    "℺.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "⅌": {
+   "data_files": [
+    "⅌.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "⅚": {
+   "data_files": [
+    "⅚.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "ubuntu",
+    "merriweather"
+   ]
+  },
+  "Ᵽ": {
+   "data_files": [
+    "Ᵽ.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "ⷲ": {
+   "data_files": [
+    "ⷲ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "ⷳ": {
+   "data_files": [
+    "ⷳ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "Ꙍ": {
+   "data_files": [
+    "Ꙍ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "ꙍ": {
+   "data_files": [
+    "ꙍ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "Ꙕ": {
+   "data_files": [
+    "Ꙕ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "Ꙗ": {
+   "data_files": [
+    "Ꙗ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "ꙿ": {
+   "data_files": [
+    "ꙿ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "꜡": {
+   "data_files": [
+    "꜡.json"
+   ],
+   "fonts": [
+    "noto-sans",
+    "liberation-serif"
+   ]
+  },
+  "Ꜻ": {
+   "data_files": [
+    "Ꜻ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "Ꜹ": {
+   "data_files": [
+    "Ꜹ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "ꝅ": {
+   "data_files": [
+    "ꝅ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "ꞯ": {
+   "data_files": [
+    "ꞯ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "ꞵ": {
+   "data_files": [
+    "ꞵ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "Ꞷ": {
+   "data_files": [
+    "Ꞷ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "ꞷ": {
+   "data_files": [
+    "ꞷ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "Ꞹ": {
+   "data_files": [
+    "Ꞹ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "Ꞻ": {
+   "data_files": [
+    "Ꞻ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "ꭐ": {
+   "data_files": [
+    "ꭐ.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "𐞐": {
+   "data_files": [
+    "𐞐.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "𐞗": {
+   "data_files": [
+    "𐞗.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "𐞚": {
+   "data_files": [
+    "𐞚.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "𐞡": {
+   "data_files": [
+    "𐞡.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
+  },
+  "\\": {
+   "data_files": [
+    "\\.json"
+   ],
+   "fonts": [
+    "noto-sans"
+   ]
   }
  },
  "missing": [

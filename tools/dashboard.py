@@ -204,9 +204,13 @@ def unpack_font_background(font: str) -> str:
 
 
 def safe_char(c) -> str:
-    """A character name usable as a file stem (normally one code point)."""
+    """A character name usable as a file stem (normally one code point).
+
+    Any single code point but a path separator, NUL or "." is a glyph name: fonts export glyphs for
+    spaces, line breaks and the backslash too. Longer names may not have surrounding whitespace.
+    """
     if not isinstance(c, str) or not c or len(c) > 8 or c.startswith(".") or any(
-            ch in c for ch in "/\\\0") or c.strip() != c:
+            ch in c for ch in ("/", "\0", os.sep, os.altsep) if ch) or (len(c) > 1 and c.strip() != c):
         raise ValueError(f"invalid character name: {c!r}")
     return c
 
@@ -445,11 +449,20 @@ class Handler(BaseHTTPRequestHandler):
                 raw_chars = req.get("chars")
                 if not isinstance(raw_chars, list) or not raw_chars:
                     raise ValueError("chars must be a non-empty list")
-                chars = [safe_char(c) for c in raw_chars]
+                # an invalid name fails only its own item, not the whole batch
+                invalid: dict[int, str] = {}
+                chars = []
+                for i, c in enumerate(raw_chars):
+                    try:
+                        chars.append(safe_char(c))
+                    except ValueError as e:
+                        invalid[i] = str(e)
+                        chars.append(None)
                 t = time.perf_counter()
-                gdir = unpack_font_chars(font, chars)
+                valid = [c for c in chars if c is not None]
+                gdir = unpack_font_chars(font, valid) if valid else os.path.join(GLYPHS, font)
                 present = set(os.listdir(gdir)) if os.path.isdir(gdir) else set()
-                unique_chars = list(dict.fromkeys(chars))
+                unique_chars = list(dict.fromkeys(valid))
                 paths = [os.path.join(gdir, f"{c}.svg") if f"{c}.svg" in present else None for c in unique_chars]
                 preds_by_char = dict(zip(unique_chars, self.model.predict_files_batch(paths)))
                 total_ms = round((time.perf_counter() - t) * 1000)
@@ -465,8 +478,10 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         existing_by_char[c] = None
                 results = []
-                for c in chars:
-                    if f"{c}.svg" not in present:
+                for i, c in enumerate(chars):
+                    if c is None:
+                        results.append({"error": invalid[i]})
+                    elif f"{c}.svg" not in present:
                         results.append({"error": "no such glyph"})
                     else:
                         r = preds_by_char.get(c)
