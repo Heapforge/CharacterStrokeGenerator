@@ -12,12 +12,19 @@ anyone on that network overwrite the training data.
 Saving writes training_data/hanzi-writer-data-youyin/data/{char}{variant}.json and, for a plain
 file whose glyph exists in training_data/font_glyphs, makes sure the manifest lists it so
 build_dataset picks it up.
+
+Unless started with --no-attempts, every prediction is also recorded in the attempt store
+(training_data/attempts, see strokegen.attempts) and checked in the background, which keeps the
+staging view of not-yet-approved glyphs current; Save approves the saved version there (recording
+it as a human edit when it differs from every stored version) and Reject records why a version is
+wrong. A store error never fails a Save: the training file is written first, exactly as without it.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -42,15 +49,36 @@ MAX_BODY = 16 * 1024 * 1024
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 FONT_FILES: dict[str, str] = {name: font_spec(name) for name in FONT_PRIORITY}
+UPLOAD_FONT = "upload"  # attempt-store font name for uploaded SVGs
+
+
+def _pred_view(r: dict) -> dict:
+    """A StrokeGenerator result as the page gets it, plus the private keys the attempt store needs
+    (_vetoed, _rounds of the refinement loop); public() drops those before a reply."""
+    out = {"strokes": r["strokes"], "medians": r["medians"], "segStroke": r["_seg_stroke"].tolist()}
+    if "_vetoed" in r:
+        out["_vetoed"] = r["_vetoed"].tolist()
+    if "_rounds" in r:
+        out["_rounds"] = [{"round": rd["round"], "strokes": rd["strokes"], "medians": rd["medians"],
+                           "seg_stroke": [int(v) for v in rd["seg_stroke"]], "checker": rd["checker"],
+                           "vetoed": None if rd["vetoed"] is None else [int(v) for v in rd["vetoed"]]}
+                          for rd in r["_rounds"]]
+        out["refine"] = r["_refine"]
+    return out
+
+
+def public(res: dict) -> dict:
+    return {k: v for k, v in res.items() if not k.startswith("_")}
 
 
 class Model:
     """Loads StrokeGenerator in the background so the page is usable right away."""
 
-    def __init__(self, device: str | None):
+    def __init__(self, device: str | None, refine_iters: int = 0, refine_ckpt: str | None = None):
         self.gen = None
         self.error = None
         self.device = device
+        self.refine = dict(refine_iters=refine_iters, refine_ckpt=refine_ckpt) if refine_iters else {}
         self.lock = threading.Lock()
         self.ready = threading.Event()
         threading.Thread(target=self._load, daemon=True).start()
@@ -58,7 +86,7 @@ class Model:
     def _load(self):
         try:
             from strokegen.predict import StrokeGenerator
-            self.gen = StrokeGenerator(device=self.device)
+            self.gen = StrokeGenerator(device=self.device, **self.refine)
             self.device = str(self.gen.dev)
         except Exception as e:  # shown in the page header
             self.error = f"{type(e).__name__}: {e}"
@@ -73,7 +101,7 @@ class Model:
         contours = load_svg_glyph(svg_text)
         with self.lock:
             r = self.gen.predict_contours(contours)
-        return {"strokes": r["strokes"], "medians": r["medians"], "segStroke": r["_seg_stroke"].tolist()}
+        return {**_pred_view(r), "_contours": contours}
 
     def predict_files_batch(self, paths: list[str | None]) -> list[dict | None]:
         self.ready.wait()
@@ -81,11 +109,19 @@ class Model:
             raise RuntimeError(f"model failed to load: {self.error}")
         with self.lock:
             raw = self.gen.predict_files_batch(paths)
-        return [
-            None if r is None else {"strokes": r["strokes"], "medians": r["medians"],
-                                    "segStroke": r["_seg_stroke"].tolist(), "error": r.get("_error")}
-            for r in raw
-        ]
+        return [None if r is None else {**_pred_view(r), "error": r.get("_error")} for r in raw]
+
+    def source_ref(self) -> dict:
+        """The loaded checkpoints and decoding parameters, for the attempt store ({} if unknown)."""
+        fn = getattr(self.gen, "source_ref", None)
+        return fn() if fn else {}
+
+    def checkpoint_info(self) -> dict:
+        fn = getattr(self.gen, "checkpoint_info", None)
+        return fn() if fn else {}
+
+    def refine_ref(self, round_: int) -> dict:
+        return self.gen.refine_ref(round_)
 
     def status(self) -> dict:
         if not self.ready.is_set():
@@ -93,6 +129,130 @@ class Model:
         if self.gen is None:
             return {"state": "error", "error": self.error}
         return {"state": "ready", "device": self.device}
+
+
+class Recorder:
+    """Writes predictions to the attempt store and runs the checker, on one background thread.
+
+    Recording a glyph (parsing, mapping it onto segment labels) and checking it take longer than
+    predicting it, so a bulk prediction answers right away; flush(font, char) waits until a glyph's
+    jobs are done, before a Save or a history lookup reads the store.
+    """
+
+    def __init__(self, store, model: Model):
+        self.store = store
+        self.model = model
+        self.jobs: queue.Queue = queue.Queue()
+        self.cond = threading.Condition()
+        self.pending: dict[tuple[str, str], int] = {}
+        self.errors: list[str] = []
+        self._noted = False
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _ref(self) -> dict:
+        ref = getattr(self.model, "source_ref", dict)()
+        if not self._noted:
+            self._noted = True
+            for sha, info in getattr(self.model, "checkpoint_info", dict)().items():
+                self.store.note_checkpoint(sha, info)
+        return ref
+
+    def _store(self, font: str, char: str, contours, pred: dict) -> tuple[str, bool]:
+        """Record a prediction: (attempt id of the version shown, whether it still needs a check).
+
+        With the refinement loop on, every round is a version: round 0 as `model`, later rounds as
+        `refiner`, each the parent of the next, with the checker result the loop already computed."""
+        rounds = pred.get("_rounds")
+        if not rounds:
+            aid, created = self.store.record(font, char, contours, pred, "model", self._ref(),
+                                             seg_stroke=pred["segStroke"], vetoed=pred.get("_vetoed"))
+            return aid, created or self.store.get(aid)["checker"] is None
+        aid = None
+        for rd in rounds:
+            first = rd["round"] == 0
+            aid, _ = self.store.record(
+                font, char, contours, rd, "model" if first else "refiner",
+                self._ref() if first else self.model.refine_ref(rd["round"]), parent=aid,
+                seg_stroke=rd["seg_stroke"], vetoed=rd["vetoed"], checker=rd["checker"])
+        return aid, self.store.get(aid)["checker"] is None
+
+    def record_now(self, font: str, char: str, contours, pred: dict) -> str:
+        """Record a prediction synchronously (one glyph) and queue its check. Returns the attempt id."""
+        aid, needs_check = self._store(font, char, contours, pred)
+        if needs_check:
+            self._submit(font, char, ("check", aid))
+        return aid
+
+    def record_later(self, font: str, char: str, svg_path: str, pred: dict) -> None:
+        self._submit(font, char, ("record", svg_path, pred))
+
+    def _submit(self, font: str, char: str, job: tuple) -> None:
+        with self.cond:
+            self.pending[(font, char)] = self.pending.get((font, char), 0) + 1
+        self.jobs.put((font, char, job))
+
+    def flush(self, font: str, char: str, timeout: float = 120.0) -> None:
+        with self.cond:
+            self.cond.wait_for(lambda: not self.pending.get((font, char)), timeout)
+
+    def _run(self):
+        while True:
+            font, char, job = self.jobs.get()
+            try:
+                if job[0] == "record":
+                    from strokegen.svg_io import load_svg_glyph
+                    with open(job[1], encoding="utf-8") as f:
+                        contours = load_svg_glyph(f.read())
+                    aid, needs_check = self._store(font, char, contours, job[2])
+                    if needs_check:
+                        self.store.check(aid)
+                else:
+                    self.store.check(job[1])
+            except Exception as e:  # noqa: BLE001  (a bad glyph must not stop the recorder)
+                self.errors.append(f"{font}/{char}: {type(e).__name__}: {e}")
+                sys.stderr.write(f"attempt store: {self.errors[-1]}\n")
+            finally:
+                with self.cond:
+                    self.pending[(font, char)] -= 1
+                    if not self.pending[(font, char)]:
+                        del self.pending[(font, char)]
+                    self.cond.notify_all()
+
+
+def resolve_attempt(store, font: str, char: str, data: dict | None, attempt_id: str | None) -> dict | None:
+    """The stored version whose content is `data` (preferring attempt_id among equals), or None when no
+    stored version has that content (an edit). Without data: the attempt attempt_id."""
+    from strokegen.attempts.labels import content_hash
+    hist = store.history(font, char)
+    if data is not None:
+        h = content_hash(validate_hw(data))
+        same = [a for a in hist if a["content_hash"] == h]
+        return next((a for a in same if a["attempt_id"] == attempt_id), same[-1]) if same else None
+    if attempt_id:
+        return next((a for a in hist if a["attempt_id"] == attempt_id), None)
+    return None
+
+
+def approve_saved(store, font: str, char: str, data: dict, attempt_id: str | None, edits, reviewer: str) -> str:
+    """Approve the saved version in the store; a version no producer made is recorded as a human edit."""
+    att = resolve_attempt(store, font, char, data, attempt_id)
+    if att is None:
+        hist = store.history(font, char, sync=False)
+        base = (next((a for a in hist if a["attempt_id"] == attempt_id), None) if attempt_id else None) or \
+            store.staged(font, char) or (hist[-1] if hist else None)
+        if base is None:
+            return "attempt store: no recorded version of this glyph to approve"
+        contours = store.contours(font, char, base["glyph_key"])
+        aid, _ = store.record(font, char, contours, data, "human_edit", {"reviewer": reviewer, "edits": edits},
+                              parent=base["attempt_id"])
+        store.check(aid)
+        att = store.get(aid)
+        how = "recorded your edit and approved it"
+    else:
+        how = f"approved the {att['source_type']} version"
+    if att["verdict"] != "approved":
+        store.approve(att["attempt_id"], by=reviewer)
+    return f"attempt store: {how}"
 
 
 def _font_binary_exists(spec: str) -> bool:
@@ -309,8 +469,26 @@ def _register(char: str) -> str:
     return "added to the training manifest"
 
 
+def attempt_view(a: dict, full: bool = False) -> dict:
+    """What the page needs of a stored version (full: with its strokes, to load it into the queue)."""
+    c = a["checker"]
+    out = {"attemptId": a["attempt_id"], "parent": a["parent_attempt_id"], "source": a["source_type"],
+           "ref": a["source_ref"], "createdAt": a["created_at"], "verdict": a["verdict"], "reason": a["reason"],
+           "tags": a["verdict_tags"], "nStrokes": len(a["hw"]["strokes"]),
+           "checker": None if c is None else {"passed": c.get("passed"), "iou": c.get("iou"),
+                                              "failures": c.get("failures", []), "error": c.get("error"),
+                                              "strokes": [r.get("failures", []) for r in c.get("strokes", [])]}}
+    if full:
+        out.update(strokes=a["hw"]["strokes"], medians=a["hw"]["medians"], segStroke=a["labels"]["seg_stroke"],
+                   font=a["font"], char=a["char"])
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     model: Model
+    store = None  # strokegen.attempts.AttemptStore, or None with --no-attempts
+    recorder: Recorder | None = None
+    reviewer = "reviewer"
     # Host headers this server answers to (None: no check). Pinning them to the loopback address
     # stops DNS rebinding: another site's page cannot reach the server through a name of its own.
     allowed_hosts: set[str] | None = None
@@ -395,6 +573,29 @@ class Handler(BaseHTTPRequestHandler):
                 if not os.path.exists(p):
                     return self.fail(404, "no such glyph")
                 return self.send(200, open(p, "rb").read(), "image/svg+xml", cache=True)
+            if url.path == "/api/staging":
+                if self.store is None:
+                    return self.json({"enabled": False, "items": []})
+                font = q.get("font", "")
+                return self.json({"enabled": True, "font": font, "items": self.store.staged_list(font)})
+            if url.path == "/api/attempt":
+                if self.store is None:
+                    return self.fail(404, "the attempt store is off (--no-attempts)")
+                try:
+                    a = self.store.get(q.get("id", ""))
+                except KeyError as e:
+                    return self.fail(404, str(e.args[0]))
+                return self.json(attempt_view(a, full=True))
+            if url.path == "/api/history":
+                if self.store is None:
+                    return self.json({"enabled": False, "versions": []})
+                font, char = q.get("font", ""), safe_char(q.get("char", ""))
+                if self.recorder:
+                    self.recorder.flush(font, char, timeout=30)
+                hist = self.store.history(font, char)
+                st, cur = self.store.status(hist)
+                return self.json({"enabled": True, "status": st, "staged": cur["attempt_id"] if cur else None,
+                                  "versions": [attempt_view(a) for a in hist]})
             if url.path == "/api/data":
                 p = data_path(q.get("char", ""), q.get("variant", ""))
                 if not os.path.exists(p):
@@ -439,9 +640,17 @@ class Handler(BaseHTTPRequestHandler):
                 svg = self.source_svg(req)
                 t = time.perf_counter()
                 res = self.model.predict(svg)
+                contours = res.pop("_contours", None)
                 if not res["strokes"]:
                     return self.fail(422, "no outline found in this SVG")
-                return self.json({**res, "ms": round((time.perf_counter() - t) * 1000)})
+                ms = round((time.perf_counter() - t) * 1000)
+                if self.recorder and contours is not None:
+                    try:
+                        font = req.get("font") if "svg" not in req else UPLOAD_FONT
+                        res["attemptId"] = self.recorder.record_now(font, safe_char(req.get("char")), contours, res)
+                    except Exception as e:  # noqa: BLE001  (the prediction is still good)
+                        res["storeError"] = f"{type(e).__name__}: {e}"
+                return self.json({**public(res), "ms": ms})
             if url.path == "/api/predict_batch":
                 font = req.get("font", "")
                 if font not in font_names():
@@ -489,7 +698,9 @@ class Handler(BaseHTTPRequestHandler):
                             results.append({"error": (r or {}).get("error") or "no outline found in this SVG"})
                         else:
                             r = {k: v for k, v in r.items() if k != "error"}
-                            results.append({**r, "ms": avg_ms, "existing": existing_by_char[c]})
+                            if self.recorder:
+                                self.recorder.record_later(font, c, os.path.join(gdir, f"{c}.svg"), r)
+                            results.append({**public(r), "ms": avg_ms, "existing": existing_by_char[c]})
                 return self.json({"results": results, "ms": total_ms})
             if url.path == "/api/commit":
                 char, variant = safe_char(req.get("char")), req.get("variant", "")
@@ -503,7 +714,36 @@ class Handler(BaseHTTPRequestHandler):
                     json.dump(data, f, ensure_ascii=False)
                 os.replace(tmp, p)
                 note = register_in_manifest(char) if variant == "" else "variant files are not used for training"
-                return self.json({"path": os.path.relpath(p, ROOT), "overwrote": existed, "note": note})
+                out = {"path": os.path.relpath(p, ROOT), "overwrote": existed, "note": note}
+                font = req.get("font")
+                if self.store is not None and variant == "" and isinstance(font, str) and font:
+                    try:  # the training file is written: the store only records that it was approved
+                        if self.recorder:
+                            self.recorder.flush(font, char)
+                        out["store"] = approve_saved(self.store, font, char, data, req.get("attemptId"),
+                                                     req.get("edits"), self.reviewer)
+                    except Exception as e:  # noqa: BLE001
+                        out["store"] = f"attempt store failed: {type(e).__name__}: {e}"
+                    out["note"] += " · " + out["store"]
+                return self.json(out)
+            if url.path == "/api/reject":
+                if self.store is None:
+                    return self.fail(409, "the attempt store is off (--no-attempts)")
+                font, char = req.get("font"), safe_char(req.get("char"))
+                if not isinstance(font, str) or not font:
+                    raise ValueError("font is required")
+                if self.recorder:
+                    self.recorder.flush(font, char)
+                att = resolve_attempt(self.store, font, char, req.get("data"), req.get("attemptId"))
+                if att is None:
+                    return self.fail(404, "this version is not in the attempt store (edited versions cannot be "
+                                          "rejected: reject the version you started from, or save your fix)")
+                tags = req.get("tags") or []
+                if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+                    raise ValueError("tags must be a list of strings")
+                verdict = "unresolved" if req.get("unresolved") else "rejected"
+                self.store.set_verdict(att["attempt_id"], verdict, req.get("reason"), tags, by=self.reviewer)
+                return self.json({"attemptId": att["attempt_id"], "verdict": verdict})
             return self.fail(404, "not found")
         except FileNotFoundError as e:
             return self.fail(404, str(e))
@@ -540,13 +780,28 @@ def main():
     ap.add_argument("--open", action="store_true", help="open the dashboard in a browser")
     ap.add_argument("--allow-host", action="append", default=[], metavar="NAME[:PORT]",
                     help="also answer requests addressed to this host name (repeatable)")
+    ap.add_argument("--no-attempts", action="store_true",
+                    help="do not record predictions, verdicts and approvals in the attempt store")
+    ap.add_argument("--attempts-root", help="attempt store directory (default: training_data/attempts)")
+    ap.add_argument("--reviewer", help="name recorded with approvals and rejections (default: your login)")
+    ap.add_argument("--refine-iters", type=int, default=0, metavar="K",
+                    help="refine glyphs the checker fails, up to K rounds (default 0: single pass)")
+    ap.add_argument("--refine-ckpt", help="refiner checkpoint (default checkpoints/refine.pt)")
     args = ap.parse_args()
     if args.host in LOOPBACK or args.allow_host:
         Handler.allowed_hosts = host_header_names([*LOOPBACK, args.host, *args.allow_host], args.port)
     else:
         print(f"WARNING: listening on {args.host} without authentication: anyone who can reach this port can "
               "overwrite the training data. Use --allow-host to pin the accepted host names.", file=sys.stderr)
-    Handler.model = Model(args.device)
+    Handler.model = Model(args.device, args.refine_iters, args.refine_ckpt)
+    if not args.no_attempts:
+        import getpass
+
+        from strokegen.attempts import AttemptStore
+        from strokegen.paths import ATTEMPTS
+        Handler.store = AttemptStore(args.attempts_root or ATTEMPTS)
+        Handler.recorder = Recorder(Handler.store, Handler.model)
+        Handler.reviewer = args.reviewer or getpass.getuser()
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{'[' + args.host + ']' if ':' in args.host else args.host}:{args.port}/"
     print(f"dashboard on {url} (model loading in the background)")

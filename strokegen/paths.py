@@ -11,3 +11,5 @@ GLYPHS = os.path.join(TRAINING_DATA, "font_glyphs")
 FONTS_DIR = os.path.join(TRAINING_DATA, "fonts")
 HWDATA = os.path.join(TRAINING_DATA, "hanzi-writer-data-youyin", "data")
 OUTPUTS = os.path.join(ROOT, "outputs")
+# attempt history (append-only log + derived index and staging); self-contained, may become a submodule
+ATTEMPTS = os.path.join(TRAINING_DATA, "attempts")

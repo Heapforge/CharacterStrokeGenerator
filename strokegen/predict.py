@@ -2,7 +2,7 @@
 
 usage:
   python -m strokegen.predict glyph.svg -o 永.json
-  python -m strokegen.predict glyph_dir/ -o out_dir/
+  python -m strokegen.predict glyph_dir/ -o out_dir/ [--refine-iters 3]
 """
 from __future__ import annotations
 
@@ -18,11 +18,11 @@ import numpy as np
 import torch
 
 from . import features, order
-from ._batch import MISSING, stage_a_from_contours, stage_a_from_file, stage_a_from_svg, stage_bc_prep
+from ._batch import MISSING, check_job, stage_a_from_contours, stage_a_from_file, stage_a_from_svg, stage_bc_prep
 from .data import collate, to_device
 from .decode import assemble_strokes, partition_from_predictions
 from .medians import polygon_parts, stroke_geometry, stroke_median
-from .model import CutModel, OrderNet
+from .model import CutModel, OrderNet, RefineCutModel
 from .order import N_PFEAT, N_SFEAT, decode_order, pair_features, stroke_features
 from .paths import CKPT
 from .svg_io import load_svg_glyph, segs_to_path
@@ -64,7 +64,7 @@ def _empty_result(lab: np.ndarray | None = None, error: str | None = None) -> di
     return out
 
 
-def _compose(lab, kept, paths, medians, stroke_order, flip) -> dict:
+def _compose(lab, kept, paths, medians, stroke_order, flip, vetoed=None) -> dict:
     """hanzi-writer result from the assembled strokes, in writing order and direction."""
     out_s, out_m = [], []
     for k in stroke_order:
@@ -74,8 +74,13 @@ def _compose(lab, kept, paths, medians, stroke_order, flip) -> dict:
     # segment -> index into the returned strokes (-1 = unassigned)
     pos = {kept[int(r)]: p for p, r in enumerate(stroke_order)}
     seg_stroke = np.array([pos.get(int(v), -1) for v in lab], np.int64)
-    return dict(strokes=out_s, medians=out_m, _partition=lab, _order=np.asarray(stroke_order),
-                _seg_stroke=seg_stroke)
+    out = dict(strokes=out_s, medians=out_m, _partition=lab, _order=np.asarray(stroke_order), _seg_stroke=seg_stroke)
+    if vetoed is not None:
+        out["_vetoed"] = np.asarray(vetoed, np.int64)
+    return out
+
+
+REFINE_STOPS = ("passed", "unchanged", "oscillation", "max_iters", "error")
 
 
 def _cut_batch_size(max_n: int) -> int:
@@ -101,7 +106,17 @@ def load_checkpoint(path: str, feature_version: int, train_cmd: str) -> dict:
 
 
 class StrokeGenerator:
-    def __init__(self, cut_ckpt: str | None = None, order_ckpt: str | None = None, device: str | None = None):
+    """Glyph outlines -> hanzi-writer data.
+
+    refine_iters K > 0 turns on the refinement loop (off by default): after the single pass, a glyph the
+    checker fails is refined by the Stage A refiner (refine_ckpt, default checkpoints/refine.pt), decoded,
+    run through Stages B and C and checked again, until it passes, its decomposition stops changing,
+    it returns to an earlier decomposition, or K rounds are done. The result is the last round; every
+    round is in result["_rounds"] (round 0 = the single pass), and result["_refine"] says why it stopped.
+    """
+
+    def __init__(self, cut_ckpt: str | None = None, order_ckpt: str | None = None, device: str | None = None,
+                 refine_iters: int = 0, refine_ckpt: str | None = None):
         cut_ckpt = cut_ckpt or os.path.join(CKPT, "cut.pt")
         order_ckpt = order_ckpt or os.path.join(CKPT, "order.pt")
         self.dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -112,8 +127,67 @@ class StrokeGenerator:
         ok = load_checkpoint(order_ckpt, order.FEATURE_VERSION, "strokegen.train_order")
         self.order = OrderNet(layers=ok["args"].get("layers", 6)).to(self.dev).eval()
         self.order.load_state_dict(ok["model"])
+        self._ckpts = dict(cut=(cut_ckpt, ck), order=(order_ckpt, ok))
+        self.refine_iters = int(refine_iters)
+        self.refiner = None
+        if self.refine_iters > 0:
+            from .refine import N_RFEAT, REFINE_VERSION
+            refine_ckpt = refine_ckpt or os.path.join(CKPT, "refine.pt")
+            rk = load_checkpoint(refine_ckpt, features.FEATURE_VERSION, "strokegen.train_refine")
+            have = rk["args"].get("refine_version")
+            if have != REFINE_VERSION:
+                raise RuntimeError(f"{refine_ckpt} has refiner inputs version {have}, this code builds version "
+                                   f"{REFINE_VERSION}. Retrain it (python -m strokegen.train_refine).")
+            ra = rk["args"]
+            self.refiner = RefineCutModel(d=ra.get("d", 256), layers=ra.get("layers", 8), n_rfeat=N_RFEAT)
+            self.refiner.load_state_dict(rk["model"])
+            self.refiner.to(self.dev).eval()
+            self._refine_ckpt = (refine_ckpt, rk)
+        self._source_ref: dict | None = None
         self._pool: ProcessPoolExecutor | None = None
         self._pool_workers = 0
+
+    def source_ref(self) -> dict:
+        """What produced this generator's output, for the attempt store: checkpoint ids (sha256 of the
+        files), their epochs and feature versions, and the decoding parameters in use."""
+        if self._source_ref is None:
+            import inspect
+
+            from . import decode
+            from .attempts.refs import file_sha256
+
+            ref: dict = {}
+            for name, (path, ck) in self._ckpts.items():  # the single pass only: see refine_ref
+                ref[f"{name}_sha"] = file_sha256(path)
+                ref[f"{name}_epoch"] = ck.get("epoch")
+                ref[f"{name}_feat_version"] = ck.get("args", {}).get("feat_version", 1)
+            params = inspect.signature(partition_from_predictions).parameters
+            ref["decode"] = {k: v.default for k, v in params.items() if v.default is not inspect.Parameter.empty}
+            ref["decode"].update(C_RATIO=decode.C_RATIO, L_MAX_TURN=decode.L_MAX_TURN)
+            self._source_ref = ref
+        return self._source_ref
+
+    def refine_ref(self, round_: int) -> dict:
+        """source_ref of a refinement round: the single pass's plus the refiner checkpoint and the round."""
+        from .attempts.refs import file_sha256
+
+        path, rk = self._refine_ckpt
+        return dict(self.source_ref(), refine_sha=file_sha256(path), refine_epoch=rk.get("epoch"),
+                    refine_version=rk["args"].get("refine_version"), refine_iters=self.refine_iters, round=round_)
+
+    def checkpoint_info(self) -> dict:
+        """{sha: info} of the loaded checkpoints, for AttemptStore.note_checkpoint."""
+        ref = self.source_ref()
+        out = {}
+        for name, (_, ck) in self._ckpts.items():
+            out[ref[f"{name}_sha"]] = dict(kind=name, epoch=ck.get("epoch"), val=ck.get("val"),
+                                           feat_version=ck.get("args", {}).get("feat_version", 1))
+        if self.refiner is not None:
+            sha = self.refine_ref(0)["refine_sha"]
+            _, rk = self._refine_ckpt
+            out[sha] = dict(kind="refine", epoch=rk.get("epoch"), val=rk.get("val"),
+                            feat_version=rk["args"].get("feat_version"))
+        return out
 
     def close(self) -> None:
         if self._pool is not None:
@@ -137,8 +211,9 @@ class StrokeGenerator:
 
     # ------------------------------------------------------------ models
     @torch.no_grad()
-    def _cut_probs(self, feats: list[dict]) -> list[tuple[np.ndarray, np.ndarray]]:
-        """(cut_p, aff_p) per glyph, batching glyphs of similar size."""
+    def _cut_probs(self, feats: list[dict], model=None, collate_fn=collate) -> list[tuple[np.ndarray, np.ndarray]]:
+        """(cut_p, aff_p) per glyph, batching glyphs of similar size (model: the cut model by default)."""
+        model = model or self.cut
         out: list = [None] * len(feats)
         by_size = sorted(range(len(feats)), key=lambda i: len(feats[i]["feat"]))
         i = 0
@@ -147,9 +222,9 @@ class StrokeGenerator:
             while i < len(by_size) and len(sub) < _cut_batch_size(len(feats[by_size[i]]["feat"])):
                 sub.append(by_size[i])
                 i += 1
-            batch = to_device(collate([dict(feats[j], index=b) for b, j in enumerate(sub)]), self.dev)
+            batch = to_device(collate_fn([dict(feats[j], index=b) for b, j in enumerate(sub)]), self.dev)
             with torch.autocast(self.dev.type, dtype=torch.float16, enabled=self.dev.type == "cuda"):
-                res = self.cut(batch)
+                res = model(batch)
             cut_all = torch.sigmoid(res["cut"].float()).cpu().numpy()
             aff_all = torch.sigmoid(res["aff"].float()).cpu().numpy()
             for b, j in enumerate(sub):
@@ -231,23 +306,95 @@ class StrokeGenerator:
                 for (g, contours, _), (cut_p, aff_p) in zip(valid, probs):
                     bc_keys.append(g)
                     bc_inputs.append((contours, cut_p, aff_p, None))
-                del valid, probs
+                del probs
 
             bc_out = self._map(stage_bc_prep, bc_inputs, workers)
             del bc_inputs
-            pending = []
-            for g, (lab, kept, paths, medians, sfeat, pfeat, err) in zip(bc_keys, bc_out):
-                if err:
-                    results[g] = _empty_result(error=err)
-                elif not kept:
-                    results[g] = _empty_result(lab)
-                else:
-                    pending.append((g, lab, kept, paths, medians, sfeat, pfeat))
+            for g, r in zip(bc_keys, self._finish(bc_out)):
+                results[g] = r
             del bc_out
-            logits = self._order_logits([(t[5], t[6]) for t in pending])
-            for (g, lab, kept, paths, medians, _, _), (dl, pl) in zip(pending, logits):
-                results[g] = _compose(lab, kept, paths, medians, decode_order(pl), dl > 0)
+            if self.refiner is not None and labels is None:
+                self._refine([(g, c, f) for g, c, f in valid if results[g]["strokes"]], results, workers)
+            valid = None
         return results
+
+    def _finish(self, bc_out: list[tuple]) -> list[dict]:
+        """Results from stage_bc_prep outputs: Stage C orders and orients the assembled strokes."""
+        out: list = [None] * len(bc_out)
+        pending = []
+        for i, (lab, kept, paths, medians, sfeat, pfeat, vetoed, err) in enumerate(bc_out):
+            if err:
+                out[i] = _empty_result(error=err)
+            elif not kept:
+                out[i] = _empty_result(lab)
+            else:
+                pending.append((i, lab, kept, paths, medians, sfeat, pfeat, vetoed))
+        logits = self._order_logits([(t[5], t[6]) for t in pending])
+        for (i, lab, kept, paths, medians, _, _, vetoed), (dl, pl) in zip(pending, logits):
+            out[i] = _compose(lab, kept, paths, medians, decode_order(pl), dl > 0, vetoed)
+        return out
+
+    def _refine(self, items: list[tuple], results: list, workers: int | None) -> None:
+        """The refinement loop (refine_iters > 0) for glyphs [(index into results, contours, features)]."""
+        from .attempts.labels import same_partition
+        from .refine import collate_refine, refine_item
+
+        def hw(r):
+            return dict(strokes=r["strokes"], medians=r["medians"])
+
+        rounds = {g: [dict(results[g], round=0)] for g, _, _ in items}
+        stop: dict[int, str] = {}
+        active = list(items)
+        for it in range(self.refine_iters + 1):
+            checks = self._map(check_job, [(c, hw(rounds[g][-1])) for g, c, _ in active], workers)
+            nxt = []
+            for (g, c, f), chk in zip(active, checks):
+                rounds[g][-1]["checker"] = chk
+                if chk.get("passed"):
+                    stop[g] = "passed"
+                elif it == self.refine_iters:
+                    stop[g] = "max_iters"
+                else:
+                    nxt.append((g, c, f))
+            active = nxt
+            if not active:
+                break
+            cur = [rounds[g][-1] for g, _, _ in active]
+            ritems = [refine_item(f, r["_seg_stroke"], r["checker"], r.get("_vetoed")) for (_, _, f), r in
+                      zip(active, cur)]
+            probs = self._cut_probs(ritems, model=self.refiner, collate_fn=collate_refine)
+            bc_out = self._map(stage_bc_prep, [(c, cp, ap, None) for (_, c, _), (cp, ap) in zip(active, probs)],
+                               workers)
+            nxt = []
+            for (g, c, f), r in zip(active, self._finish(bc_out)):
+                if "_error" in r or not r["strokes"]:
+                    stop[g] = "error"
+                    continue
+                if same_partition(r["_seg_stroke"], rounds[g][-1]["_seg_stroke"]):
+                    stop[g] = "unchanged"  # the same decomposition again: nothing new to check
+                    continue
+                looped = any(same_partition(r["_seg_stroke"], old["_seg_stroke"]) for old in rounds[g][:-1])
+                rounds[g].append(dict(r, round=it + 1))
+                if looped:
+                    stop[g] = "oscillation"  # A -> B -> A: kept, but not refined further
+                    rounds[g][-1]["checker"] = None
+                else:
+                    nxt.append((g, c, f))
+            active = nxt
+        # rounds that ended the loop without a check yet (oscillation) get one, so every round has a result
+        todo = [(g, c) for g, c, _ in items if rounds[g][-1].get("checker") is None]
+        for (g, _), chk in zip(todo, self._map(check_job, [(c, hw(rounds[g][-1])) for g, c in todo], workers)):
+            rounds[g][-1]["checker"] = chk
+        for g, _, _ in items:
+            rs = rounds[g]
+            summary = [dict(round=r["round"], strokes=r["strokes"], medians=r["medians"], seg_stroke=r["_seg_stroke"],
+                            partition=r["_partition"], order=r["_order"], vetoed=r.get("_vetoed"),
+                            checker=r["checker"]) for r in rs]
+            results[g] = dict(rs[-1], _rounds=summary,
+                              _refine=dict(rounds=len(rs) - 1, stop=stop.get(g, "max_iters"),
+                                           passed=bool(rs[-1]["checker"].get("passed"))))
+            results[g].pop("round", None)
+            results[g].pop("checker", None)
 
     def predict_contours_batch(self, contours_list: list, workers: int | None = None,
                                labels: list | None = None) -> list[dict]:
@@ -327,8 +474,11 @@ def main():
     ap.add_argument("-o", "--output", help="output .json (file input) or directory (directory input)")
     ap.add_argument("--device")
     ap.add_argument("--workers", type=int, help="CPU worker processes for directory input")
+    ap.add_argument("--refine-iters", type=int, default=0, metavar="K",
+                    help="refine glyphs the checker fails, up to K rounds (default 0: single pass)")
+    ap.add_argument("--refine-ckpt", help="refiner checkpoint (default checkpoints/refine.pt)")
     args = ap.parse_args()
-    gen = StrokeGenerator(device=args.device)
+    gen = StrokeGenerator(device=args.device, refine_iters=args.refine_iters, refine_ckpt=args.refine_ckpt)
     try:
         if os.path.isdir(args.input):
             out_dir = args.output or os.path.join("outputs", "predicted")

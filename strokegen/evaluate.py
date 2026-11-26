@@ -19,6 +19,34 @@ from .predict import StrokeGenerator
 from .raster import iou, render, render_union
 
 
+def score_glyph(r: dict, res: dict) -> dict:
+    """End-to-end scores of one prediction (a StrokeGenerator result) against a labelled record."""
+    C = r["contours"]
+    w = np.array([s.length() for c in C for s in c])
+    gt = r["seg_stroke"]
+    part = res["_partition"] if len(res["_partition"]) else np.full(len(gt), -1)
+    m = match_strokes(part, gt, w)
+    loops = assemble_strokes(C, part) if (part >= 0).any() else []
+    union_iou = iou(render_union(loops), render(C, 256))
+    # predicted strokes are labelled 0..K-1 and all non-empty, so _order indexes partition labels
+    mp = m["assignment"]
+    ranks, dirs_ok, med_dist = [], [], []
+    for pos, k in enumerate(res["_order"]):
+        g = mp.get(int(k))
+        if g is None:
+            ranks.append(-1)
+            continue
+        ranks.append(g)
+        ours = np.array(res["medians"][pos], float)
+        gm = r["medians"][g]
+        d_f, d_r = median_distance(ours, gm), median_distance(ours[::-1], gm)
+        med_dist.append(min(d_f, d_r))  # Stage B quality only: direction is scored below
+        dirs_ok.append(d_f <= d_r)
+    order_ok = bool(m["glyph_exact"] and ranks == sorted(ranks) and -1 not in ranks)
+    return dict(m=m, union_iou=union_iou, med_dist=med_dist, dirs_ok=dirs_ok, order_ok=order_ok,
+                full=bool(order_ok and all(dirs_ok)))
+
+
 def evaluate(gen: StrokeGenerator, recs: list[dict], workers: int | None = None) -> tuple[dict, list[dict]]:
     agg = dict(glyphs=0, strokes=0, stroke_exact=0, glyph_part=0, union_iou=[], med_dist=[], dir_ok=0, dir_n=0,
                order_exact_e2e=0, full=0, gtp_order=0, gtp_dir_ok=0, gtp_dir_n=0, failed=0)
@@ -29,39 +57,20 @@ def evaluate(gen: StrokeGenerator, recs: list[dict], workers: int | None = None)
     # Stage C alone, on the GT partition
     preds_gtp = gen.predict_contours_batch(contours, workers=workers, labels=gt_labels)
     for r, res, lab, rg in zip(recs, preds, gt_labels, preds_gtp):
-        C = r["contours"]
-        w = np.array([s.length() for c in C for s in c])
-        gt = r["seg_stroke"]
         agg["glyphs"] += 1
         if "_error" in res:
             print(f"{r['char']}: prediction failed: {res['_error']}")
             agg["failed"] += 1
-        part = res["_partition"] if len(res["_partition"]) else np.full(len(gt), -1)
-        m = match_strokes(part, gt, w)
+        sc = score_glyph(r, res)
+        m, dirs_ok, order_ok, full = sc["m"], sc["dirs_ok"], sc["order_ok"], sc["full"]
         agg["strokes"] += m["n_gt"]
         agg["stroke_exact"] += m["exact"]
         agg["glyph_part"] += m["glyph_exact"]
-        loops = assemble_strokes(C, part) if (part >= 0).any() else []
-        agg["union_iou"].append(iou(render_union(loops), render(C, 256)))
-        # predicted strokes are labelled 0..K-1 and all non-empty, so _order indexes partition labels
-        mp = m["assignment"]
-        ranks, dirs_ok = [], []
-        for pos, k in enumerate(res["_order"]):
-            g = mp.get(int(k))
-            if g is None:
-                ranks.append(-1)
-                continue
-            ranks.append(g)
-            ours = np.array(res["medians"][pos], float)
-            gm = r["medians"][g]
-            d_f, d_r = median_distance(ours, gm), median_distance(ours[::-1], gm)
-            agg["med_dist"].append(min(d_f, d_r))  # Stage B quality only: direction is scored below
-            dirs_ok.append(d_f <= d_r)
+        agg["union_iou"].append(sc["union_iou"])
+        agg["med_dist"] += sc["med_dist"]
         agg["dir_ok"] += sum(dirs_ok)
         agg["dir_n"] += len(dirs_ok)
-        order_ok = m["glyph_exact"] and ranks == sorted(ranks) and -1 not in ranks
         agg["order_exact_e2e"] += order_ok
-        full = bool(order_ok and all(dirs_ok))
         agg["full"] += full
         gt_ids = [k for k in range(int(lab.max()) + 1) if (lab == k).any()]
         gt_ranks = [gt_ids[k] for k in rg["_order"]]
