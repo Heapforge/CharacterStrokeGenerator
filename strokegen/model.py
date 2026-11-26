@@ -88,16 +88,20 @@ class CutModel(nn.Module):
         self.aff_b = nn.Parameter(torch.zeros(1))
         self.aff_dim = aff_dim
 
-    def forward(self, batch):
-        feat, pad = batch["feat"], batch["pad"]  # pad: (B,N) True for padding
+    def embed(self, batch):
+        """Per-segment input tokens (B,N,d)."""
+        feat = batch["feat"]
         xy = feat[..., 8:10]  # segment midpoint
         se = torch.cat([feat[..., 0:2], feat[..., 6:8]], -1)  # start, end
         cnnf = self.cnn(batch["img"], batch["probe"])
-        x = self.inp(torch.cat([feat, fourier(torch.cat([xy, se], -1), N_FOURIER), cnnf], -1))
-        bias = self.bias(batch["bucket"].long()).permute(0, 3, 1, 2)  # (B,H,N,N)
-        bias = bias.masked_fill(pad[:, None, None, :], float("-inf"))
-        for layer in self.layers:
-            x = layer(x, bias)
+        return self.inp(torch.cat([feat, fourier(torch.cat([xy, se], -1), N_FOURIER), cnnf], -1))
+
+    def attn_bias(self, batch):
+        """Relative-position attention bias (B,H,N,N), -inf on padding keys."""
+        bias = self.bias(batch["bucket"].long()).permute(0, 3, 1, 2)
+        return bias.masked_fill(batch["pad"][:, None, None, :], float("-inf"))
+
+    def outputs(self, x, batch):
         h = self.norm(x)
         hn = torch.gather(h, 1, batch["nxt"][..., None].expand(-1, -1, h.shape[-1]))
         cut = self.cut(torch.cat([h, hn], -1)).squeeze(-1)
@@ -105,9 +109,72 @@ class CutModel(nn.Module):
         aff = u @ u.transpose(1, 2) / math.sqrt(self.aff_dim) + self.aff_b
         return dict(cut=cut, aff=aff, h=h)
 
+    def forward(self, batch):
+        x = self.embed(batch)
+        bias = self.attn_bias(batch)
+        for layer in self.layers:
+            x = layer(x, bias)
+        return self.outputs(x, batch)
 
-def cut_losses(out, batch, pos_weight: float = 3.0):
+
+class RefineCutModel(CutModel):
+    """Stage A refiner: CutModel that also sees a current decomposition and the checker's feedback on it.
+
+    batch["in_lab"] (B,N): current stroke per segment (-1 unassigned or padding). It enters as a per-layer,
+    per-head attention bias between segments of the same current stroke (stroke ids are arbitrary, so no
+    id embeddings) and as residuals on the outputs: +r_cut where the current labels cut, +r_aff between
+    same / -r_aff between different current strokes.
+    batch["rfeat"] (B,N,n_rfeat): per-segment feedback (strokegen.refine.input_features), added to the tokens
+    through a linear map.
+    All new parameters start at zero, so an untrained refiner computes exactly what its base CutModel does.
+    """
+
+    NEW = ("r_inp.weight", "r_inp.bias", "r_same", "r_cut", "r_aff")
+
+    def __init__(self, *args, n_rfeat: int, **kw):
+        super().__init__(*args, **kw)
+        d = self.inp[-1].out_features
+        self.r_inp = nn.Linear(n_rfeat, d)
+        nn.init.zeros_(self.r_inp.weight)
+        nn.init.zeros_(self.r_inp.bias)
+        self.r_same = nn.Parameter(torch.zeros(len(self.layers), self.heads))
+        self.r_cut = nn.Parameter(torch.zeros(1))
+        self.r_aff = nn.Parameter(torch.zeros(1))
+
+    @classmethod
+    def from_cut(cls, state: dict, **kw) -> RefineCutModel:
+        """A refiner warm-started from a CutModel state dict (its new parameters zero)."""
+        m = cls(**kw)
+        missing, unexpected = m.load_state_dict(state, strict=False)
+        if unexpected or set(missing) - set(cls.NEW):
+            raise ValueError(f"not a CutModel state for this size: missing {missing}, unexpected {unexpected}")
+        return m
+
+    def new_parameters(self) -> list[nn.Parameter]:
+        return [p for n, p in self.named_parameters() if n in self.NEW]
+
+    def forward(self, batch):
+        lab = batch["in_lab"]
+        known = lab >= 0
+        same = ((lab[:, :, None] == lab[:, None, :]) & known[:, :, None] & known[:, None, :]).float()
+        x = self.embed(batch) + self.r_inp(batch["rfeat"])
+        bias = self.attn_bias(batch)
+        for li, layer in enumerate(self.layers):
+            x = layer(x, bias + self.r_same[li][None, :, None, None] * same[:, None])
+        out = self.outputs(x, batch)
+        nxt_lab = torch.gather(lab, 1, batch["nxt"])
+        cut_in = ((lab != nxt_lab) | ~known).float()
+        out["cut"] = out["cut"] + self.r_cut * cut_in
+        pair_known = (known[:, :, None] & known[:, None, :]).float()
+        out["aff"] = out["aff"] + self.r_aff * (2 * same - pair_known)
+        return out
+
+
+def cut_losses(out, batch, pos_weight: float = 3.0, sample_weight: torch.Tensor | None = None):
+    """(cut BCE, affinity BCE). sample_weight (B,): weight per glyph (refiner pairs); None = all 1."""
     m = batch["cut_mask"]
+    if sample_weight is not None:
+        return _weighted_cut_losses(out, batch, pos_weight, sample_weight)
     l_cut = F.binary_cross_entropy_with_logits(
         out["cut"].float(), batch["cut"], weight=m, pos_weight=torch.tensor(pos_weight, device=m.device),
         reduction="sum",
@@ -122,6 +189,32 @@ def cut_losses(out, batch, pos_weight: float = 3.0):
     la = F.binary_cross_entropy_with_logits(out["aff"].float(), same.float(), reduction="none")
     l_aff = 0.5 * (la[same].mean() if same.any() else 0.0) + 0.5 * (la[diff].mean() if diff.any() else 0.0)
     return l_cut, l_aff
+
+
+def _affinity_masks(batch):
+    lab = batch["lab"]
+    valid = (lab >= 0) & ~batch["pad"]
+    pm = valid[:, :, None] & valid[:, None, :]
+    pm = pm & ~torch.eye(lab.shape[1], dtype=torch.bool, device=lab.device)[None]
+    same = (lab[:, :, None] == lab[:, None, :]) & pm
+    return same, pm & ~same
+
+
+def _weighted_cut_losses(out, batch, pos_weight, w):
+    """cut_losses with each glyph's terms weighted by w (weighted means instead of plain means)."""
+    m = batch["cut_mask"] * w[:, None]
+    l_cut = F.binary_cross_entropy_with_logits(
+        out["cut"].float(), batch["cut"], weight=m, pos_weight=torch.tensor(pos_weight, device=m.device),
+        reduction="sum",
+    ) / m.sum().clamp(min=1e-6)
+    same, diff = _affinity_masks(batch)
+    la = F.binary_cross_entropy_with_logits(out["aff"].float(), same.float(), reduction="none")
+    wp = w[:, None, None].expand_as(la)
+
+    def mean(sel):
+        return (la * wp)[sel].sum() / wp[sel].sum().clamp(min=1e-6) if sel.any() else 0.0
+
+    return l_cut, 0.5 * mean(same) + 0.5 * mean(diff)
 
 
 # ---------------------------------------------------------------- Stage C

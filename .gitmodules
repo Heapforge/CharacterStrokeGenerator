@@ -1,3 +1,6 @@
 [submodule "training_data/hanzi-writer-data-youyin"]
 	path = training_data/hanzi-writer-data-youyin
 	url = https://github.com/MadLadSquad/hanzi-writer-data-youyin
+[submodule "training_data/attempts"]
+	path = training_data/attempts
+	url = git@github.com:Heapforge/CSGIterativeRefiningData

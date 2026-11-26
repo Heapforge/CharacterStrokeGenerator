@@ -162,6 +162,19 @@ main { display: grid; grid-template-columns: minmax(300px, 360px) 230px 1fr; min
 .ws sup { font-size: 9px; margin-left: 1px; }
 .warnbox { font-size: 12.5px; padding: 8px 10px; border-radius: 6px; background: var(--warn-soft); color: var(--warn); }
 .errbox { font-size: 12.5px; padding: 8px 10px; border-radius: 6px; background: var(--err-soft); color: var(--err); }
+.stlist { display: flex; flex-direction: column; gap: 2px; padding: 0 14px 14px; }
+.st { display: grid; grid-template-columns: 34px 1fr auto; gap: 8px; align-items: center; padding: 4px 8px; border-radius: 6px; border: 1px solid transparent; cursor: pointer; user-select: none; }
+.st:hover { background: var(--sunk); }
+.st.sel { border-color: var(--accent); background: var(--accent-soft); }
+.st .ch { font-family: var(--cjk); font-size: 20px; text-align: center; }
+.st .info { font-size: 11px; color: var(--ink-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.pass { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.chip.fail { color: var(--err); background: var(--err-soft); border-color: transparent; }
+.hist { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 12px; }
+.hist .v { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 5px; }
+.hist .v.cur { background: var(--accent-soft); }
+.hist .why { grid-column: 2 / 4; color: var(--ink-3); }
+.modal textarea { width: 100%; min-height: 70px; font: inherit; }
 .okbox { font-size: 12.5px; padding: 8px 10px; border-radius: 6px; background: var(--ok-soft); color: var(--ok); }
 
 .order-wrap { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
@@ -249,6 +262,7 @@ details.json pre { margin: 10px 0 0; max-height: 340px; overflow: auto; backgrou
         <div class="tabs" role="tablist">
           <button class="on" data-tab="fonts">Font glyphs</button>
           <button data-tab="upload">Upload SVGs</button>
+          <button data-tab="staging" title="Glyphs recorded in the attempt store that are not approved yet">Staging</button>
         </div>
         <div id="fonts-ctrl" style="display:flex;flex-direction:column;gap:8px">
           <div class="row">
@@ -268,6 +282,24 @@ details.json pre { margin: 10px 0 0; max-height: 340px; overflow: auto; backgrou
       <div class="scroll" id="fonts-pane">
         <div class="grid" id="grid"></div>
         <div class="more" id="more"></div>
+      </div>
+      <div class="scroll" id="staging-pane" hidden>
+        <div style="display:flex;flex-direction:column;gap:8px;padding:0 14px 10px">
+          <div class="row">
+            <select class="input grow" id="st-font"></select>
+            <select class="input" id="st-filter" title="Filter by checker result and status">
+              <option value="all">All staged</option>
+              <option value="pass">Checker passed</option>
+              <option value="fail">Checker failed</option>
+              <option value="repaired">Repaired (not model)</option>
+              <option value="unresolved">Unresolved</option>
+            </select>
+          </div>
+          <div class="row"><span class="muted grow" id="st-count"></span>
+            <button class="btn ghost sm" id="st-all">Select shown</button>
+            <button class="btn ghost sm" id="st-reload" title="Read the store again (after a repair pass imported new versions)">↻</button></div>
+        </div>
+        <div class="stlist" id="stlist"></div>
       </div>
       <div class="scroll" id="upload-pane" hidden>
         <label class="drop" id="drop">
@@ -323,6 +355,7 @@ const S = {
   selected: new Map(),          // "font\tchar" -> {font, char}
   uploads: [],                  // {id, name, char, svg}
   queue: [], cur: null, busy: false, dataDir: "",
+  staging: {font: "", items: [], enabled: true, sel: new Set()},   // the attempt store's staging view
 };
 let nextId = 1;
 
@@ -487,8 +520,57 @@ for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => {
   $("#fonts-ctrl").hidden = S.tab !== "fonts";
   $("#fonts-pane").hidden = S.tab !== "fonts";
   $("#upload-pane").hidden = S.tab !== "upload";
+  $("#staging-pane").hidden = S.tab !== "staging";
+  if (S.tab === "staging") loadStaging();
   renderSelbar();
 };
+
+/* ---------------- source: staging (attempt store) ---------------- */
+async function loadStaging(font = $("#st-font").value || S.font) {
+  if (!$("#st-font").options.length) {
+    $("#st-font").innerHTML = S.fonts.map(f => `<option>${esc(f)}</option>`).join("") + `<option value="upload">upload</option>`;
+  }
+  $("#st-font").value = font;
+  S.staging.font = font; S.staging.sel.clear();
+  $("#stlist").innerHTML = `<div class="muted">Loading…</div>`;
+  let r;
+  try { r = await api(`/api/staging?font=${encodeURIComponent(font)}`); }
+  catch (e) { $("#stlist").innerHTML = `<div class="errbox">Could not read the staging view: ${esc(e.message)}</div>`; return; }
+  if (S.staging.font !== font) return;
+  S.staging.enabled = r.enabled; S.staging.items = r.items;
+  renderStaging();
+}
+function stagingShown() {
+  const f = $("#st-filter").value;
+  return S.staging.items.filter(r => f === "all" || (f === "pass" && r.passed === true) || (f === "fail" && r.passed === false)
+    || (f === "repaired" && r.source_type !== "model") || (f === "unresolved" && r.status === "unresolved"));
+}
+function renderStaging() {
+  if (!S.staging.enabled) {
+    $("#stlist").innerHTML = `<div class="muted">The attempt store is off (the dashboard was started with --no-attempts).</div>`;
+    $("#st-count").textContent = ""; renderSelbar(); return;
+  }
+  const shown = stagingShown();
+  const queued = new Set(S.queue.filter(i => i.staged).map(i => i.staged));
+  $("#stlist").innerHTML = shown.map(r => {
+    const chk = r.passed == null ? `<span class="chip">unchecked</span>` : `<span class="chip ${r.passed ? "pass" : "fail"}">${r.passed ? "pass" : "fail"}</span>`;
+    const why = r.verdict === "rejected" || r.status === "unresolved" ? ` · ${esc(r.verdict)}${r.reason ? ": " + esc(r.reason) : ""}` : "";
+    return `<div class="st${S.staging.sel.has(r.attempt_id) ? " sel" : ""}" data-id="${esc(r.attempt_id)}" title="${esc(cp(r.char))}${queued.has(r.attempt_id) ? " · in the queue" : ""}">
+      <span class="ch">${esc(r.char)}</span><span class="info">${esc(r.source_type)} · v${r.versions}${r.has_training_file ? " · has training file" : ""}${why}</span>${chk}</div>`;
+  }).join("") || `<div class="muted">Nothing staged for ${esc(S.staging.font)}${S.staging.items.length ? " matches this filter" : ""}. Processing glyphs stages them here.</div>`;
+  $("#st-count").textContent = `${shown.length.toLocaleString()} of ${S.staging.items.length.toLocaleString()} staged`;
+  renderSelbar();
+}
+$("#stlist").addEventListener("click", e => {
+  const row = e.target.closest(".st"); if (!row) return;
+  const id = row.dataset.id;
+  if (S.staging.sel.has(id)) S.staging.sel.delete(id); else S.staging.sel.add(id);
+  row.classList.toggle("sel", S.staging.sel.has(id)); renderSelbar();
+});
+$("#st-font").onchange = e => loadStaging(e.target.value);
+$("#st-filter").onchange = () => { S.staging.sel.clear(); renderStaging(); };
+$("#st-reload").onclick = () => loadStaging();
+$("#st-all").onclick = () => { for (const r of stagingShown()) S.staging.sel.add(r.attempt_id); renderStaging(); };
 function charFromName(name) {
   const stem = name.replace(/\.svg$/i, "");
   if (Array.from(stem).length === 1) return stem;
@@ -546,6 +628,11 @@ function renderSelbar() {
     $("#sel-count").innerHTML = n ? `<b>${n.toLocaleString()}</b> selected` : `Click glyphs to select · <span class="kbd">Shift</span> for a range`;
     $("#process-btn").disabled = !n;
     $("#process-btn").textContent = n ? `Process ${n.toLocaleString()}` : "Process";
+  } else if (S.tab === "staging") {
+    const n = S.staging.sel.size;
+    $("#sel-count").innerHTML = n ? `<b>${n.toLocaleString()}</b> selected` : "Click staged glyphs to review them";
+    $("#process-btn").disabled = !n;
+    $("#process-btn").textContent = n ? `Review ${n.toLocaleString()}` : "Review";
   } else {
     const ok = S.uploads.filter(u => validChar(u.char)).length;
     $("#sel-count").innerHTML = S.uploads.length ? `<b>${ok}</b> of ${S.uploads.length} ready` : "No files yet";
@@ -554,13 +641,23 @@ function renderSelbar() {
   }
 }
 $("#sel-clear").onclick = () => {
-  if (S.tab === "fonts") { S.selected.clear(); renderGrid(); } else { S.uploads = []; renderUploads(); }
+  if (S.tab === "fonts") { S.selected.clear(); renderGrid(); }
+  else if (S.tab === "staging") { S.staging.sel.clear(); renderStaging(); }
+  else { S.uploads = []; renderUploads(); }
 };
 $("#process-btn").onclick = () => {
   const have = new Set(S.queue.filter(i => i.font).map(i => i.font + "\t" + i.char));
   if (S.tab === "fonts") {
     for (const [k, v] of S.selected) if (!have.has(k)) S.queue.push(newItem({font: v.font, char: v.char}));
     S.selected.clear(); renderGrid();
+  } else if (S.tab === "staging") {
+    const queued = new Set(S.queue.filter(i => i.staged).map(i => i.staged));
+    for (const r of S.staging.items) {
+      if (!S.staging.sel.has(r.attempt_id) || queued.has(r.attempt_id)) continue;
+      const font = S.staging.font === "upload" ? null : S.staging.font;
+      S.queue.push(newItem({char: r.char, staged: r.attempt_id, stageFont: S.staging.font, ...(font ? {font} : {fileName: "staged upload"})}));
+    }
+    S.staging.sel.clear(); renderStaging();
   } else {
     const keep = [];
     for (const u of S.uploads) {
@@ -574,7 +671,8 @@ $("#process-btn").onclick = () => {
 /* ---------------- queue ---------------- */
 function newItem(o) {
   return {id: nextId++, status: "pending", variant: "", pred: null, order: null, flip: null, parts: {}, base: 0, segStroke: null,
-    deleted: [], existing: {}, loading: {}, loadErr: {}, saved: null, error: null, ...o};
+    deleted: [], existing: {}, loading: {}, loadErr: {}, saved: null, error: null,
+    attemptId: null, staged: null, hist: undefined, ...o};
 }
 // Strokes are indices into it.pred; indices >= it.base are merges, it.parts[i] = [first, second].
 // it.deleted lists strokes taken out of it.order, so they can be put back.
@@ -618,6 +716,7 @@ function applyPrediction(it, r) {
   it.pred = {strokes: r.strokes, medians: r.medians}; it.ms = r.ms;
   it.order = r.strokes.map((_, i) => i); it.flip = r.strokes.map(() => false);
   it.segStroke = r.segStroke; it.base = r.strokes.length; it.parts = {}; it.deleted = [];
+  it.attemptId = r.attemptId || null; it.source = r.source || "model"; it.hist = undefined;
   if ("existing" in r) it.existing[""] = r.existing;
   it.status = "done";
 }
@@ -627,7 +726,7 @@ async function runQueue() {
   S.busy = true;
   let it;
   while ((it = S.queue.find(i => i.status === "pending"))) {
-    const pending = it.font ? S.queue.filter(i => i.status === "pending" && i.font === it.font) : [];
+    const pending = it.font && !it.staged ? S.queue.filter(i => i.status === "pending" && i.font === it.font && !i.staged) : [];
     if (pending.length > BULK_MIN) {
       // send BULK_CHUNK at a time; a remainder too small for its own bulk request joins the last one
       const batch = pending.slice(0, pending.length - BULK_CHUNK <= BULK_MIN ? pending.length : BULK_CHUNK);
@@ -652,7 +751,8 @@ async function runQueue() {
     it.status = "running"; renderQueue();
     if (S.cur === it.id) renderInspector();
     try {
-      const r = await api("/api/predict", it.svg ? {svg: it.svg} : {font: it.font, char: it.char});
+      const r = it.staged ? await api(`/api/attempt?id=${encodeURIComponent(it.staged)}`)
+        : await api("/api/predict", it.svg ? {svg: it.svg, char: it.char} : {font: it.font, char: it.char});
       applyPrediction(it, r);
     } catch (e) { it.status = "error"; it.error = e.message; }
     // the existing training file is fetched when the item is shown (a failure there is not a failed prediction)
@@ -738,7 +838,7 @@ function renderInspector(opt = {}) {
   }
   const head = `<div class="ihead"><div class="glyph">${esc(it.char)}</div>
     <div class="facts"><div class="t">${esc(cp(it.char))} <span class="chip ${itemChip(it)[0]}">${itemChip(it)[1]}</span></div>
-    <div class="muted">${it.font ? "font glyph · " + esc(it.font) : "uploaded · " + esc(it.fileName)}${it.pred ? ` · ${it.order.length} strokes · ${it.ms} ms` : ""}</div></div>
+    <div class="muted">${it.font ? "font glyph · " + esc(it.font) : "uploaded · " + esc(it.fileName)}${it.pred ? ` · ${it.order.length} strokes · ${it.staged ? "staged " + esc(it.source) + " version" : it.ms + " ms"}` : ""}</div></div>
     <div class="nav"><button class="btn ghost sm" id="prev" title="Previous (K)">↑</button><button class="btn ghost sm" id="next" title="Next (J)">↓</button></div></div>`;
   if (it.status !== "done") {
     root.innerHTML = head + (it.status === "error" ? `<div class="errbox">Prediction failed: ${esc(it.error)}</div>`
@@ -775,6 +875,7 @@ function renderInspector(opt = {}) {
             `<button class="btn sm" data-restore="${x}" title="Put stroke ${esc(strokeLabel(it, x))} back">${esc(strokeLabel(it, x))} ↺</button>`).join("")}</div>` : ""}
           <div id="order-err">${it.merging ? `<div class="muted" style="margin-top:8px">Merging…</div>` : it.editErr ? `<div class="errbox" style="margin-top:8px">${esc(it.editErr)}</div>` : ""}</div></div>
       </div></div>
+    ${reviewCardHtml(it, edited)}
     <div class="card"><details class="json" ${S.jsonOpen ? "open" : ""}><summary>JSON <span class="muted" style="text-transform:none;letter-spacing:0">${(JSON.stringify(data).length / 1024).toFixed(1)} KB</span>
         <span style="flex:1"></span><button class="btn ghost sm" id="j-copy">Copy</button><button class="btn ghost sm" id="j-dl">Download</button></summary>
       <pre id="json-pre">${esc(prettyJson(data))}</pre></details></div>
@@ -791,6 +892,99 @@ function renderInspector(opt = {}) {
   if (ex) writers.gt = makeWriter($("#hw-gt"), it.char, ex);
   bindInspector(it, data);
   bindWriting(it, writeSrc(ex) === "gt" ? ex : data, writeSrc(ex));
+  bindReview(it, data, edited);
+}
+
+/* ---------------- review: checker result, version history, reject ---------------- */
+const storeFont = it => it.stageFont || it.font || "upload";
+function ensureHistory(it) {
+  if (it.hist !== undefined || it.histLoading) return;
+  it.histLoading = true;
+  api(`/api/history?font=${encodeURIComponent(storeFont(it))}&char=${encodeURIComponent(it.char)}`)
+    .then(r => { it.hist = r; }, e => { it.hist = {error: e.message}; })
+    .finally(() => { it.histLoading = false; if (S.cur === it.id) renderInspector({keepScroll: true}); });
+}
+// The stored version this item shows (unedited): the one it was loaded from, else the newest model version.
+function shownVersion(it) {
+  const vs = (it.hist && it.hist.versions) || [];
+  return vs.find(v => v.attemptId === it.attemptId) || (!it.staged && [...vs].reverse().find(v => v.source === "model")) || null;
+}
+function checkerHtml(c) {
+  if (!c) return `<span class="chip">not checked yet</span>`;
+  if (c.error) return `<span class="chip fail">checker error</span> <span class="muted">${esc(c.error)}</span>`;
+  const bad = [...new Set([...(c.failures || []), ...(c.strokes || []).flat()])];
+  const per = (c.strokes || []).map((f, k) => f.length ? `${k + 1}: ${f.join(", ")}` : "").filter(Boolean).join(" · ");
+  return `<span class="chip ${c.passed ? "pass" : "fail"}">${c.passed ? "checker passed" : "checker failed"}</span>
+    <span class="muted">IoU ${c.iou != null ? c.iou.toFixed(4) : "?"}${bad.length ? " · " + esc(bad.join(", ")) : ""}${per ? " · strokes " + esc(per) : ""}</span>`;
+}
+function refLabel(v) {
+  const r = v.ref || {};
+  if (v.source === "model") return `cut ${(r.cut_sha || "?").slice(0, 8)}`;
+  if (v.source === "refiner") return `refiner ${(r.refine_sha || "?").slice(0, 8)} · round ${r.round ?? "?"}`;
+  if (v.source === "fixup_script") return `${r.script || "?"}${r.dirty ? " (dirty)" : ""}`;
+  if (v.source === "llm_repair") return `${r.llm_model || "?"} · ${r.run_id || "?"}`;
+  if (v.source === "human_edit") return r.reviewer || "";
+  if (v.source === "imported") return (r.commit || "").slice(0, 10);
+  return "";
+}
+function reviewCardHtml(it, edited) {
+  if (!it.pred) return "";
+  ensureHistory(it);
+  const h = it.hist;
+  if (h && h.enabled === false) return "";
+  let body;
+  if (h === undefined) body = `<div class="muted">Reading the attempt store…</div>`;
+  else if (h.error) body = `<div class="errbox">Could not read the attempt store: ${esc(h.error)}</div>`;
+  else {
+    const cur = shownVersion(it);
+    body = `<div>${edited ? `<span class="chip edited">your edit</span> <span class="muted">is checked and recorded when you save it</span>`
+        : cur ? checkerHtml(cur.checker) : `<span class="muted">This version is not in the store yet.</span>`}</div>
+      <details ${S.histOpen ? "open" : ""} id="hist-d"><summary class="muted">Glyph status: <b>${esc(h.status)}</b> · ${h.versions.length} version${h.versions.length === 1 ? "" : "s"}</summary>
+      <div class="hist">${h.versions.map((v, k) => `<div class="v${cur && v.attemptId === cur.attemptId && !edited ? " cur" : ""}" title="${esc(v.attemptId)}${v.parent ? " ← " + esc(v.parent) : ""}">
+        <span class="mono">v${k + 1}</span><span>${esc(v.source)} <span class="muted">${esc(refLabel(v))} · ${v.nStrokes} stroke${v.nStrokes === 1 ? "" : "s"} · ${esc((v.createdAt || "").slice(0, 16).replace("T", " "))}</span></span>
+        <span>${v.checker ? `<span class="chip ${v.checker.passed ? "pass" : "fail"}">${v.checker.passed ? "pass" : "fail"}</span>` : ""} <span class="chip">${esc(v.verdict)}</span></span>
+        ${v.reason ? `<span class="why">${esc(v.reason)}${v.tags && v.tags.length ? " [" + esc(v.tags.join(", ")) + "]" : ""}</span>` : ""}</div>`).join("")}</div></details>`;
+  }
+  const canReject = h && !h.error && !edited && shownVersion(it);
+  return `<div class="card"><h3>Review <span style="flex:1"></span>
+      <button class="btn ghost sm" id="rv-reject" ${canReject ? "" : "disabled"} title="${edited ? "Reset your edits to reject the version they started from" : "Record why this version is wrong (it stays staged for the next repair pass)"}">Reject…</button></h3>
+    ${body}${it.rejectMsg ? `<div class="msg ${it.rejectMsg.cls}" style="margin-top:8px">${esc(it.rejectMsg.text)}</div>` : ""}</div>`;
+}
+function bindReview(it, data, edited) {
+  const d = $("#hist-d"); if (d) d.ontoggle = e => { S.histOpen = e.target.open; };
+  const b = $("#rv-reject"); if (!b) return;
+  b.onclick = () => {
+    const cur = shownVersion(it), passed = cur && cur.checker && cur.checker.passed;
+    $("#modal-root").innerHTML = `<div class="modal-bg"><div class="modal" role="dialog" aria-modal="true">
+      <h2>Reject this version of ${esc(it.char)}?</h2>
+      <div>It stays staged, with your reason, for the next repair pass.${passed ? " <b>The checker passed it</b>, so say what is wrong: these cases teach the refiner the most." : ""}</div>
+      <textarea class="input" id="rj-reason" placeholder="What is wrong, e.g. the two bars should be one stroke"></textarea>
+      <input class="input" id="rj-tags" placeholder="Error tags, comma-separated (e.g. order, direction, merge, split, counter, median)">
+      <label class="muted"><input type="checkbox" id="rj-unres"> Give up for now (unresolved): no repair pass should retry it</label>
+      <div class="row"><button class="btn ghost" id="m-cancel">Cancel</button><button class="btn danger" id="m-ok">Reject</button></div>
+    </div></div>`;
+    const close = () => { $("#modal-root").innerHTML = ""; };
+    $("#m-cancel").onclick = close;
+    $(".modal-bg").onclick = e => { if (e.target === e.currentTarget) close(); };
+    $("#rj-reason").focus();
+    $("#m-ok").onclick = async () => {
+      const reason = $("#rj-reason").value.trim(), unresolved = $("#rj-unres").checked;
+      const tags = $("#rj-tags").value.split(",").map(t => t.trim()).filter(Boolean);
+      if ((passed || unresolved) && !reason) { $("#rj-reason").classList.add("bad"); $("#rj-reason").focus(); return; }
+      close();
+      try {
+        const r = await api("/api/reject", {font: storeFont(it), char: it.char, data, attemptId: it.attemptId, reason, tags, unresolved});
+        it.rejectMsg = {cls: "warnbox", text: `Marked ${r.verdict}.`};
+      } catch (e) { it.rejectMsg = {cls: "errbox", text: `Reject failed: ${e.message}`}; }
+      it.hist = undefined; renderInspector({keepScroll: true});
+    };
+  };
+}
+// What the reviewer changed relative to the loaded version (recorded with a human edit).
+function editSummary(it) {
+  if (!isEdited(it)) return null;
+  return {order: it.order.map(i => strokeLabel(it, i)), flipped: it.order.filter(i => it.flip[i]).map(i => strokeLabel(it, i)),
+          merged: Object.values(it.parts).length, deleted: it.deleted.map(i => strokeLabel(it, i))};
 }
 
 /* ---------------- writing test ---------------- */
@@ -1064,10 +1258,12 @@ async function commit(it, quiet = false) {
   const ex = it.existing[it.variant];
   it.saving = true; if (!quiet) renderInspector({keepScroll: true});
   try {
-    const r = await api("/api/commit", {char: it.char, variant: it.variant, data: currentData(it), overwrite: !!ex});
+    const r = await api("/api/commit", {char: it.char, variant: it.variant, data: currentData(it), overwrite: !!ex,
+      font: storeFont(it), attemptId: it.attemptId, edits: editSummary(it)});
     it.saved = r.path;
     it.saveMsg = {cls: "okbox", text: `${r.overwrote ? "Overwrote" : "Created"} ${r.path} · ${r.note}`};
     it.existing[it.variant] = currentData(it);
+    it.hist = undefined; it.rejectMsg = null;
     if (it.variant === "" && S.glyphs && S.glyphs.has.has(it.char)) {
       S.glyphs.has.set(it.char, true);
       if (!quiet && S.tab === "fonts") renderGrid();
@@ -1080,6 +1276,7 @@ async function commit(it, quiet = false) {
   it.saving = false;
   renderQueue();
   if (S.cur === it.id) renderInspector({keepScroll: true});
+  if (it.saved && S.tab === "staging" && !quiet) loadStaging();
   return !!it.saved;
 }
 

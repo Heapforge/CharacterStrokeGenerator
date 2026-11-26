@@ -260,11 +260,12 @@ def chains_from_cuts(contours, cut_p: np.ndarray, thr: float = 0.5) -> np.ndarra
 
 
 def cluster_chains(chain_id: np.ndarray, aff_p: np.ndarray, w: np.ndarray, thr: float = 0.5,
-                   valid=None) -> np.ndarray:
+                   valid=None, on_veto=None) -> np.ndarray:
     """Average-linkage agglomeration of chains on (length weighted) mean pairwise affinity.
 
     valid(list_of_chain_ids) -> bool can veto a merge. A veto lasts until one of the two
-    clusters grows: a bigger cluster can make a merge valid that was not before."""
+    clusters grows: a bigger cluster can make a merge valid that was not before.
+    on_veto(chains_a, chains_b) is told about every vetoed merge (it does not change the result)."""
     K = int(chain_id.max()) + 1
     M = np.zeros((K, len(chain_id)))
     M[chain_id, np.arange(len(chain_id))] = w
@@ -287,6 +288,8 @@ def cluster_chains(chain_id: np.ndarray, aff_p: np.ndarray, w: np.ndarray, thr: 
         ka, kb = idx[a], idx[b]
         if valid is not None and not valid(members[ka] + members[kb]):
             vetoed.add((int(ka), int(kb)))
+            if on_veto is not None:
+                on_veto(members[ka], members[kb])
             continue
         S[ka, :] += S[kb, :]
         S[:, ka] += S[:, kb]
@@ -388,7 +391,9 @@ def bridge_validator(contours, chain_id: np.ndarray, inside=None):
     return valid
 
 
-def _partition(contours, cut_p, aff_p, w, cut_thr, merge_thr, validate, inside=None) -> np.ndarray:
+def _partition(contours, cut_p, aff_p, w, cut_thr, merge_thr, validate, inside=None,
+               vetoed: set | None = None) -> np.ndarray:
+    """vetoed: when given, collects the segments of chains whose merge the bridge validator refused."""
     chain = chains_from_cuts(contours, cut_p, cut_thr)
     lab = cluster_chains(chain, aff_p, w, merge_thr)
     if not validate:
@@ -396,6 +401,7 @@ def _partition(contours, cut_p, aff_p, w, cut_thr, merge_thr, validate, inside=N
     # Re-cluster any stroke whose bridges would leave the glyph, vetoing invalid merges step by step.
     # (Validating only final clusters: partial subsets of a correct stroke can need outside bridges.)
     valid = bridge_validator(contours, chain, inside)
+    refused: set[int] = set()
     out = lab.copy()
     nxt = int(lab.max()) + 1
     for k in np.unique(lab):
@@ -405,9 +411,12 @@ def _partition(contours, cut_p, aff_p, w, cut_thr, merge_thr, validate, inside=N
             continue
         sub_chain = np.searchsorted(ids, chain[sel])
         sub = cluster_chains(sub_chain, aff_p[np.ix_(sel, sel)], w[sel], merge_thr,
-                             lambda m, ids=ids: valid([ids[i] for i in m]))
+                             lambda m, ids=ids: valid([ids[i] for i in m]),
+                             lambda a, b, ids=ids: refused.update(ids[i] for i in a + b))
         out[sel] = sub + nxt
         nxt += int(sub.max()) + 1
+    if vetoed is not None and refused:
+        vetoed.update(np.nonzero(np.isin(chain, sorted(refused)))[0].tolist())
     _, out = np.unique(out, return_inverse=True)
     return out
 
@@ -484,12 +493,20 @@ def bridge_overflow(contours, lab: np.ndarray, inside=None) -> np.ndarray:
 
 
 def partition_from_predictions(contours, cut_p, aff_p, cut_thr=0.5, merge_thr=0.5, validate=True,
-                               refine_min=0.1, refine_steps=4, refine_candidates=8) -> np.ndarray:
+                               refine_min=0.1, refine_steps=4, refine_candidates=8,
+                               report: dict | None = None) -> np.ndarray:
+    """Stroke label per segment from Stage A's predictions.
+
+    report: when given, report["vetoed"] is set to the segments (sorted flat indices) of chains whose
+    merge the bridge validator refused in the returned partition (refiner feedback; no effect on it)."""
     segs = flat_segments(contours)
     w = np.array([max(s.length(), 1.0) for s in segs])
     cut_p = np.asarray(cut_p, float)
     inside = glyph_mask(contours) if validate else None
-    lab = _partition(contours, cut_p, aff_p, w, cut_thr, merge_thr, validate, inside)
+    vetoed: set[int] = set()
+    lab = _partition(contours, cut_p, aff_p, w, cut_thr, merge_thr, validate, inside, vetoed)
+    if report is not None:
+        report["vetoed"] = sorted(vetoed)
     if validate:
         lab = absorb_counters(contours, lab, aff_p)
     if not validate or refine_steps <= 0:
@@ -513,11 +530,14 @@ def partition_from_predictions(contours, cut_p, aff_p, cut_thr=0.5, merge_thr=0.
             tried.add(int(i))
             trial_p = cut_p.copy()
             trial_p[i] = 1.0
+            trial_vetoed: set[int] = set()
             trial = absorb_counters(contours, _partition(contours, trial_p, aff_p, w, cut_thr, merge_thr, validate,
-                                                         inside), aff_p)
+                                                         inside, trial_vetoed), aff_p)
             trial_over = bridge_overflow(contours, trial, inside)
             if trial_over.sum() < over.sum():
                 cut_p, lab, over, accepted = trial_p, trial, trial_over, True
+                if report is not None:
+                    report["vetoed"] = sorted(trial_vetoed)
                 break
         if not accepted:
             break
